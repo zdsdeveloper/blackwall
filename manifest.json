@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "zds.blackwall",
+  "name": "Blackwall",
+  "version": "1.0.0",
+  "author": "zds",
+  "description": "Timed session lock with no way out. Pick a duration on the bar; the Blackwall holds the session until it expires.",
+  "kinds": [
+    "bar-widget",
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Blackwall",
+    "description": "Lock the session for a fixed period with no unlock",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

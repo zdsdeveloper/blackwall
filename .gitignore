@@ -1,0 +1,8 @@
+# Editor and OS noise
+*.bak
+*.bak.*
+*~
+.DS_Store
+
+# Scratch copies made while testing the lock view outside the shell
+_*.mp3
