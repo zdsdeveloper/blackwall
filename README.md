@@ -26,6 +26,22 @@ Enabling puts the button in the bar's right section. Move it with:
 omarchy bar move zds.blackwall --section center
 ```
 
+### Optional: give it a soundtrack
+
+No audio ships with the plugin, so the lock is silent out of the box. Drop any
+audio file into `sounds/` and it loops while locked — the filename does not
+matter:
+
+```bash
+cp ~/Downloads/whatever.mp3 ~/.config/omarchy/plugins/zds.blackwall/sounds/
+```
+
+Recommended: **"Cyberpunk 2077 — Standing in front of the Blackwall
+(Ambience)" by Anendale**, which is what this was built against. Source your
+own copy; it is not redistributed here. See
+[`sounds/README.md`](sounds/README.md) for formats, pointing at a file
+elsewhere, and volume.
+
 ## Remove
 
 ```bash
@@ -52,7 +68,7 @@ or use the recovery path below.
 - **A monospace font with block-drawing glyphs** (`▀ ▄ █ ░ ▒ ▓`). Any Nerd
   Font has them; Omarchy's default JetBrainsMono Nerd Font is fine.
 - **`qt6-multimedia`** *(optional)* — only for the ambience. Without it, or
-  without `sounds/blackwall.mp3`, the lock is simply silent.
+  with no audio file in `sounds/`, the lock is simply silent.
 - **`qt6-shadertools`** *(only to develop)* — supplies `qsb` for rebuilding
   `glitch.frag.qsb`. Not needed to run the plugin; the compiled shader ships
   in the repo.
@@ -77,7 +93,7 @@ and `test -f`.
 | `Logo.js`                | The wall itself, as text                                  |
 | `logo.txt`               | Source the logo was generated from                        |
 | `Model.js`               | Duration parsing, formatting, config, and the ripple math |
-| `sounds/blackwall.mp3`   | Ambience, played on loop while locked (optional)          |
+| `sounds/`                | Drop audio here to give the lock a soundtrack (optional)  |
 
 Two files outside this directory:
 
@@ -185,9 +201,13 @@ The menu carries one setting, stored in `~/.config/omarchy/zds.blackwall.json`:
 ```json
 {
   "version": 1,
-  "persistAcrossReboot": true
+  "persistAcrossReboot": true,
+  "soundPath": ""
 }
 ```
+
+(`soundPath` is the ambience override — see [`sounds/README.md`](sounds/README.md).
+Empty means auto-discovery.)
 
 The file is created with defaults on first run, is watched, so hand-edits take
 effect without a restart, and is also reachable over IPC.
@@ -294,11 +314,15 @@ Face count, opacity, and colour are at the top of `GhostFaces.qml`.
 
 ### The ambience
 
-`sounds/blackwall.mp3`, looped at volume `0.3` (`audioVolume` in
+Whatever audio is in `sounds/`, looped at volume `0.3` (`audioVolume` in
 `BlackwallLockView.qml`), fading out across the shatter so it is not cut off
-mid-note when the session hands back. The service probes for the file at startup and
-exposes `soundAvailable`; if it is missing, `soundSource` stays empty, no
-player is built, and the lock is simply silent.
+mid-note when the session hands back. See [`sounds/README.md`](sounds/README.md).
+
+Resolution order, done at startup and again whenever the config changes: an
+explicit `soundPath` in the config file, then the first audio file in
+`sounds/` regardless of name, then nothing. When nothing resolves,
+`soundSource` stays empty, no player is built, and the lock is silent — that
+is the entire missing-file handling.
 
 On a multi-monitor setup one lock surface exists per output, all running the
 same view. Exactly one claims the audio via `Service.claimAudio()`, or the
@@ -310,10 +334,7 @@ GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 Copyright (C) 2026 Zamil Suarez.
 
-**Scope:** the license covers the plugin source in this repository. It does
-**not** cover `sounds/blackwall.mp3` — that is "Cyberpunk 2077 — Standing in
-front of the Blackwall (Ambience)" by Anendale, included here for convenience
-and owned by its respective rights holders. It is not mine to license, and
-nothing in the GPL grant applies to it. If you fork or redistribute this
-plugin, delete that file; the plugin runs silent without it and the audio is
-strictly optional.
+**No audio is distributed with this plugin.** The recommended track —
+"Cyberpunk 2077 — Standing in front of the Blackwall (Ambience)" by Anendale —
+is named in the docs but not included, because it is not mine to license.
+`sounds/` is gitignored: whatever you put there is yours and stays local.

@@ -84,7 +84,7 @@ function parseState(raw) {
 // User config: { version, persistAcrossReboot }. Anything unreadable defaults
 // to persisting, which matches the behaviour the plugin shipped with.
 function parseConfig(raw) {
-  var defaults = { persistAcrossReboot: true }
+  var defaults = { persistAcrossReboot: true, soundPath: "" }
   var text = String(raw || "").trim()
   if (text === "") return defaults
 
@@ -92,7 +92,9 @@ function parseConfig(raw) {
     var parsed = JSON.parse(text)
     if (!parsed || typeof parsed !== "object") return defaults
     return {
-      persistAcrossReboot: parsed.persistAcrossReboot !== false
+      persistAcrossReboot: parsed.persistAcrossReboot !== false,
+      // Empty means "look in sounds/". An explicit path wins over it.
+      soundPath: String(parsed.soundPath || "")
     }
   } catch (e) {
     return defaults

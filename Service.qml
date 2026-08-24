@@ -25,11 +25,22 @@ Item {
   readonly property string stateDir: home + "/.local/state/omarchy/blackwall"
   readonly property string statePath: stateDir + "/deadline"
   readonly property string configPath: home + "/.config/omarchy/zds.blackwall.json"
-  readonly property string soundPath: home + "/.config/omarchy/plugins/zds.blackwall/sounds/blackwall.mp3"
+  readonly property string soundDir: home + "/.config/omarchy/plugins/zds.blackwall/sounds"
 
-  // Present only if the sound file is actually on disk. The lock view binds
-  // its player to this, so a missing file is silence rather than an error.
-  property bool soundAvailable: false
+  // Where the ambience comes from, in priority order:
+  //   1. `soundPath` in the config file, if it points at a readable file
+  //   2. the first audio file in sounds/, whatever it is called
+  //   3. nothing — the lock is silent
+  //
+  // No audio ships with the plugin, so (2) is what makes "drop a file in
+  // sounds/" work without anyone having to rename it to match a constant.
+  property string configuredSoundPath: ""
+  property string resolvedSoundPath: ""
+  readonly property bool soundAvailable: resolvedSoundPath !== ""
+
+  // encodeURI, not plain concatenation: a filename with a space in it is
+  // completely ordinary and would otherwise produce an unusable URL.
+  readonly property string soundUrl: soundAvailable ? "file://" + encodeURI(resolvedSoundPath) : ""
 
   // Epoch milliseconds the lock lifts at. 0 means disengaged.
   property double deadline: 0
@@ -367,10 +378,38 @@ Item {
     onExited: if (!root.bootIdLoaded) { root.bootIdLoaded = true; root.maybeResume() }
   }
 
+  readonly property string soundProbeScript:
+    'configured="$1"; dir="$2"; ' +
+    'if [[ -n $configured ]]; then ' +
+      'case $configured in "~/"*) configured="$HOME/${configured:2}";; esac; ' +
+      'if [[ -f $configured && -r $configured ]]; then printf %s "$configured"; exit 0; fi; ' +
+    'fi; ' +
+    'shopt -s nullglob nocaseglob; ' +
+    'for f in "$dir"/*.mp3 "$dir"/*.ogg "$dir"/*.opus "$dir"/*.flac "$dir"/*.wav "$dir"/*.m4a; do ' +
+      'if [[ -f $f && -r $f ]]; then printf %s "$f"; exit 0; fi; ' +
+    'done'
+
+  function refreshSound() {
+    if (soundProbe.running) return
+    soundProbe.command = ["bash", "-c", root.soundProbeScript,
+                          "blackwall-sound-probe", root.configuredSoundPath, root.soundDir]
+    soundProbe.running = true
+  }
+
+  onConfiguredSoundPathChanged: refreshSound()
+
   Process {
     id: soundProbe
-    command: ["test", "-f", root.soundPath]
-    onExited: function(exitCode) { root.soundAvailable = exitCode === 0 }
+    stdout: StdioCollector {
+      id: soundProbeOut
+      waitForEnd: true
+    }
+    onExited: {
+      var next = String(soundProbeOut.text || "").trim()
+      if (next === root.resolvedSoundPath) return
+      root.resolvedSoundPath = next
+      root.logEvent(next === "" ? "no ambience found" : "ambience: " + next)
+    }
   }
 
   // ------------------------------------------------------------ user config
@@ -378,24 +417,43 @@ Item {
   function applyConfig(raw) {
     var parsed = Model.parseConfig(raw)
     root.persistAcrossReboot = parsed.persistAcrossReboot
+    root.configuredSoundPath = parsed.soundPath
     root.configLoaded = true
     root.maybeResume()
+    root.refreshSound()
   }
 
   // Write the defaults out on first run so the file is there to be read and
   // hand-edited, rather than only appearing once the toggle is touched.
   function seedConfig() {
     applyConfig("")
-    configFile.setText(JSON.stringify({ version: 1, persistAcrossReboot: true }, null, 2) + "\n")
+    writeConfig()
+  }
+
+  // Every setting, every time. Writing only the field that changed would drop
+  // the others — flipping the toggle used to erase soundPath.
+  function writeConfig() {
+    configFile.setText(JSON.stringify({
+      version: 1,
+      persistAcrossReboot: root.persistAcrossReboot,
+      soundPath: root.configuredSoundPath
+    }, null, 2) + "\n")
   }
 
   function setPersistAcrossReboot(value) {
     var next = !!value
     if (next === root.persistAcrossReboot && root.configLoaded) return next
     root.persistAcrossReboot = next
-    configFile.setText(JSON.stringify({ version: 1, persistAcrossReboot: next }, null, 2) + "\n")
+    writeConfig()
     logEvent("persistAcrossReboot=" + next)
     return next
+  }
+
+  function setSoundPath(value) {
+    root.configuredSoundPath = String(value || "").trim()
+    writeConfig()
+    logEvent("soundPath=" + (root.configuredSoundPath || "(auto)"))
+    return root.configuredSoundPath
   }
 
   // watchChanges so hand-edits to the JSON take effect without a restart.
@@ -463,7 +521,7 @@ Item {
         active: root.holding
         releasing: root.releasing
         releaseProgress: root.releaseProgress
-        soundSource: root.soundAvailable ? "file://" + root.soundPath : ""
+        soundSource: root.soundUrl
 
         // Assigned, not bound. claimAudio() reads audioClaims while it
         // increments it, so as a binding QML captures audioClaims as a
@@ -496,6 +554,8 @@ Item {
         deadline: root.deadline,
         persistAcrossReboot: root.persistAcrossReboot,
         soundAvailable: root.soundAvailable,
+        soundPath: root.resolvedSoundPath,
+        soundConfigured: root.configuredSoundPath,
         idleSuppressed: root.idleSuppressed,
         lastEvent: root.lastEvent,
         lastEventAt: root.lastEventAt
@@ -508,6 +568,18 @@ Item {
 
     // Reading and writing the toggle is fine while locked — it decides what
     // happens at the *next* boot, so it is not an unlock path.
+    // Report and set where the ambience comes from. Handy for checking a
+    // dropped-in file was actually picked up.
+    function sound(): string {
+      if (root.resolvedSoundPath !== "") return root.resolvedSoundPath
+      return "(none — drop an audio file in " + root.soundDir + ")"
+    }
+
+    function setSound(path: string): string {
+      var next = root.setSoundPath(path)
+      return next === "" ? "(auto)" : next
+    }
+
     function persist(): string {
       return root.persistAcrossReboot ? "true" : "false"
     }
@@ -525,6 +597,6 @@ Item {
     resolveServices()
     stateDirProc.running = true
     bootIdProc.running = true
-    soundProbe.running = true
+    refreshSound()
   }
 }

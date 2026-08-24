@@ -4,5 +4,8 @@
 *~
 .DS_Store
 
-# Scratch copies made while testing the lock view outside the shell
-_*.mp3
+# The ambience is not distributed — it is not ours to license. Drop your own
+# audio into sounds/ (see sounds/README.md); anything you put there is
+# ignored by git and picked up automatically by the plugin.
+sounds/*
+!sounds/README.md
