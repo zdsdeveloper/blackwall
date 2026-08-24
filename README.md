@@ -289,7 +289,12 @@ Everything visual lives in `BlackwallLockView.qml`:
   sequence (1900ms in, 2500ms out) drives the swell.
 
 Preset durations and the 30-minute warning threshold are `PRESET_MINUTES` and
-`WARN_MINUTES` in `Model.js`.
+`WARN_MINUTES` in `Model.js`. The custom field accepts 1 to 720 minutes
+(12 hours, `MAX_SECONDS`); anything longer is clamped rather than refused.
+
+The confirmation screen always spells out the real duration — "The session
+locks for 8 hours" — so read that line before engaging. It is the last point
+at which a mistyped number is still recoverable.
 
 ### The glitch field
 

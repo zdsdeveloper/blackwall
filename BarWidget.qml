@@ -27,6 +27,30 @@ Panel {
 
   readonly property var presets: Model.PRESET_MINUTES
 
+  // QQC.SpinBox only pushes typed text into `value` when the edit is
+  // committed — Enter, or the field losing focus. Someone who types a number
+  // and goes straight to Engage never commits, so `value` (and with it
+  // customMinutes) would still hold the previous figure and the lock would
+  // run for the wrong duration. Read the editor text directly instead.
+  function enterCustomStage() {
+    stage = "custom"
+    // Focus after the stage switch has laid the field out.
+    Qt.callLater(function() {
+      if (root.stage === "custom" && minutesField.field) minutesField.field.forceActiveFocus()
+    })
+  }
+
+  function commitMinutes() {
+    var spin = minutesField.field
+    var editor = spin ? spin.contentItem : null
+    if (editor) {
+      var typed = parseInt(String(editor.text).replace(/[^0-9]/g, ""), 10)
+      if (isFinite(typed) && typed > 0)
+        customMinutes = Math.round(Model.clamp(typed, 1, Math.floor(Model.MAX_SECONDS / 60)))
+    }
+    return customMinutes
+  }
+
   function resetStage() {
     stage = "menu"
     pendingMinutes = 0
@@ -57,10 +81,10 @@ Panel {
 
   function activateCursor() {
     if (stage === "confirm") { commit(pendingMinutes); return }
-    if (stage === "custom") { request(customMinutes); return }
+    if (stage === "custom") { request(commitMinutes()); return }
     if (cursorIndex < 0) return
     if (cursorIndex < presets.length) request(presets[cursorIndex])
-    else if (cursorIndex === customIndex) stage = "custom"
+    else if (cursorIndex === customIndex) enterCustomStage()
     else if (cursorIndex === persistIndex) togglePersist()
   }
 
@@ -200,7 +224,7 @@ Panel {
             fontFamily: root.bar.fontFamily
             bordered: true
             hasCursor: root.cursorIndex === root.customIndex
-            onClicked: root.stage = "custom"
+            onClicked: root.enterCustomStage()
             onHovered: function(on) { if (on) root.cursorIndex = root.customIndex }
           }
 
@@ -244,6 +268,17 @@ Panel {
             fontFamily: root.bar.fontFamily
             fieldWidth: parent.width
             onModified: function(value) { root.customMinutes = value }
+
+            // Without this the field can only be reached by clicking it: the
+            // panel's key catcher owns the keyboard until something inside
+            // takes focus, so a keyboard user could never type a duration.
+            Component.onCompleted: if (root.stage === "custom") field.forceActiveFocus()
+
+            // Enter inside the field commits and engages in one go.
+            Connections {
+              target: minutesField.field.contentItem
+              function onAccepted() { root.request(root.commitMinutes()) }
+            }
           }
 
           Row {
@@ -269,7 +304,7 @@ Panel {
               foreground: root.barForeground
               fontFamily: root.bar.fontFamily
               bordered: true
-              onClicked: root.request(root.customMinutes)
+              onClicked: root.request(root.commitMinutes())
             }
           }
         }
