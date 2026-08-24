@@ -27,6 +27,12 @@ Item {
   readonly property string configPath: home + "/.config/omarchy/zds.blackwall.json"
   readonly property string soundDir: home + "/.config/omarchy/plugins/zds.blackwall/sounds"
 
+  // Taken from this file's own URL rather than assumed, so the guard is found
+  // wherever the plugin was installed from.
+  readonly property string pluginDir:
+    decodeURIComponent(Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")).replace(/\/$/, "")
+  readonly property string guardScript: pluginDir + "/bin/blackwall-file-guard"
+
   // Where the ambience comes from, in priority order:
   //   1. `soundPath` in the config file, if it points at a readable file
   //   2. the first audio file in sounds/, whatever it is called
@@ -80,6 +86,10 @@ Item {
   // Telling those two apart is what `bootId` is for; see resumeFromState().
   property bool persistAcrossReboot: true
   property bool configLoaded: false
+
+  // Cleared when the config path turns out to be something we refuse to touch,
+  // which also stops us writing to it.
+  property bool configWritable: true
 
   // This boot's kernel boot id, stamped into the state file so a resume can
   // tell "the shell restarted" from "the machine rebooted".
@@ -278,7 +288,7 @@ Item {
   // tell a shell restart from a reboot. Older files held a bare number; those
   // are read as "boot unknown", which resumes only when persistence is on.
   function persistDeadline() {
-    stateFile.setText(JSON.stringify({
+    stateFile.write(JSON.stringify({
       version: 1,
       deadline: Math.round(root.deadline),
       bootId: root.bootId
@@ -286,7 +296,7 @@ Item {
   }
 
   function clearDeadline() {
-    stateFile.setText(JSON.stringify({ version: 1, deadline: 0, bootId: "" }) + "\n")
+    stateFile.write(JSON.stringify({ version: 1, deadline: 0, bootId: "" }) + "\n")
   }
 
   // Resume needs three inputs — the state file, the config, and this boot's
@@ -345,21 +355,39 @@ Item {
 
   Process {
     id: stateDirProc
-    command: ["mkdir", "-p", root.stateDir]
+    // 0700 on the leaf. The guard refuses any file whose parent directory
+    // other users can write to, and this is the directory that decides
+    // whether anything can be planted at the deadline path in the first place.
+    command: ["bash", "-c", 'mkdir -p -- "$1" && chmod 700 -- "$1"',
+              "blackwall-state-dir", root.stateDir]
     onExited: root.stateDirReady = true
   }
 
-  // Path stays empty until mkdir has returned. A FileView pointed at a path
-  // inside a directory that does not exist yet fires onLoadFailed straight
-  // away, and that would burn the one-shot resume before the real read.
-  FileView {
+  // Path stays empty until mkdir has returned, so the first read is not spent
+  // on a directory that does not exist yet — that would burn the one-shot
+  // resume before the real read.
+  //
+  // Blackwall's own private file, in a directory nothing else uses. Symlinks
+  // are refused outright. A write may take the name back from a planted entry,
+  // because refusing forever would quietly stop the deadline persisting, and
+  // that would turn restarting the shell into a way out of a lock.
+  GuardedFile {
     id: stateFile
     path: root.stateDirReady ? root.statePath : ""
-    watchChanges: false
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.noteState(text())
-    onLoadFailed: root.noteState("")
+    guardScript: root.guardScript
+    allowSymlink: false
+    reclaim: true
+
+    onReadyChanged: if (ready) read()
+    onTextReady: function(text) { root.noteState(text) }
+    onAbsent: root.noteState("")
+    // Never stalls the resume: a refusal resolves the gate as "no saved lock",
+    // exactly as an empty file would.
+    onRefused: function(reason) {
+      root.logEvent("state unreadable, ignoring it: " + reason)
+      root.noteState("")
+    }
+    onWriteRefused: function(reason) { root.logEvent("state not written: " + reason) }
   }
 
   Process {
@@ -433,11 +461,19 @@ Item {
   // Every setting, every time. Writing only the field that changed would drop
   // the others — flipping the toggle used to erase soundPath.
   function writeConfig() {
-    configFile.setText(JSON.stringify({
+    if (!root.configWritable) return
+    configFile.write(JSON.stringify({
       version: 1,
       persistAcrossReboot: root.persistAcrossReboot,
       soundPath: root.configuredSoundPath
     }, null, 2) + "\n")
+  }
+
+  // A setting still takes effect in memory when the config path is one we
+  // refuse to touch, but saying "true" and silently not saving it would be a
+  // lie the user only finds out about after a reboot.
+  function notPersistedSuffix() {
+    return root.configWritable ? "" : " (in memory only — config path refused)"
   }
 
   function setPersistAcrossReboot(value) {
@@ -456,16 +492,33 @@ Item {
     return root.configuredSoundPath
   }
 
-  // watchChanges so hand-edits to the JSON take effect without a restart.
-  FileView {
+  // The user's own file, so the rules are the opposite way round: symlinks are
+  // allowed, because keeping a config in a dotfiles repo and linking it into
+  // place is a normal thing to do — the link still has to land inside $HOME and
+  // the target still faces every other check. Nothing is ever reclaimed here;
+  // this file belongs to the user, not to Blackwall.
+  //
+  // notifyChanges keeps hand-edits taking effect without a restart.
+  GuardedFile {
     id: configFile
     path: root.configPath
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.applyConfig(text())
-    onLoadFailed: root.seedConfig()
-    onFileChanged: reload()
+    guardScript: root.guardScript
+    allowSymlink: true
+    reclaim: false
+    notifyChanges: true
+
+    Component.onCompleted: read()
+    onChangedExternally: read()
+    onTextReady: function(text) { root.applyConfig(text) }
+    onAbsent: root.seedConfig()
+    onRefused: function(reason) {
+      // A path we will not read is a path we will not write. Run on defaults
+      // in memory and leave whatever is sitting there completely alone.
+      root.configWritable = false
+      root.logEvent("config unreadable, using defaults: " + reason)
+      root.applyConfig("")
+    }
+    onWriteRefused: function(reason) { root.logEvent("config not written: " + reason) }
   }
 
   // ------------------------------------------------------------- countdown
@@ -556,6 +609,7 @@ Item {
         soundAvailable: root.soundAvailable,
         soundPath: root.resolvedSoundPath,
         soundConfigured: root.configuredSoundPath,
+        configWritable: root.configWritable,
         idleSuppressed: root.idleSuppressed,
         lastEvent: root.lastEvent,
         lastEventAt: root.lastEventAt
@@ -577,7 +631,7 @@ Item {
 
     function setSound(path: string): string {
       var next = root.setSoundPath(path)
-      return next === "" ? "(auto)" : next
+      return (next === "" ? "(auto)" : next) + root.notPersistedSuffix()
     }
 
     function persist(): string {
@@ -588,7 +642,8 @@ Item {
       var text = String(value || "").trim().toLowerCase()
       if (text !== "true" && text !== "false")
         return "usage: blackwall setPersist <true|false>"
-      return root.setPersistAcrossReboot(text === "true") ? "true" : "false"
+      return (root.setPersistAcrossReboot(text === "true") ? "true" : "false")
+             + root.notPersistedSuffix()
     }
   }
 

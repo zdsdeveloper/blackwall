@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Bounded, no-follow reads and writes for Blackwall's two state files.
+
+Blackwall's deadline and config live at predictable paths under $HOME. Qt's
+FileView will happily open whatever is sitting at such a path -- a FIFO that
+never returns, a device, a symlink onto some other file, a multi-gigabyte
+replacement -- and it has no size ceiling, so a read lands entirely in the
+shell's heap. Its atomic-write path resolves a symlink and writes through to
+the target, which turns "engage a lock" into "clobber that file".
+
+So neither file is touched through FileView any more. Everything goes through
+this script, and every check is made against an already-open descriptor rather
+than against the path:
+
+    open(O_NOFOLLOW | O_NONBLOCK) -> fstat(fd) -> read(fd, <= max)
+
+O_NOFOLLOW makes a planted symlink fail at open(). O_NONBLOCK is what stops a
+FIFO from hanging the open itself, which is the one check that cannot be done
+after the fact. fstat on the descriptor -- not stat on the path -- means the
+type, owner, mode and size we validate belong to the file we actually read;
+there is no window in which the path can be swapped underneath us.
+
+Writes go to a fresh 0600 temp file in the same directory and are renamed into
+place. rename(2) acts on the link itself, so a symlink sitting at the target
+path gets replaced rather than followed.
+
+Usage:  blackwall-file-guard <read|write> <path> <max-bytes> <allow-symlink> <reclaim>
+
+allow-symlink is set only for the user's own config file, which people
+legitimately keep symlinked into a dotfiles repo; the link still has to land
+inside $HOME and the target still faces every check. reclaim is set only for
+Blackwall's private deadline file, and lets a write take back its own filename
+from a planted entry instead of refusing forever.
+
+Exit codes: 0 ok (read: content on stdout) | 10 nothing there | 11 refused,
+reason on stderr | 12 unexpected error.
+"""
+
+import os
+import stat
+import sys
+import tempfile
+
+OK, ABSENT, REFUSED, ERROR = 0, 10, 11, 12
+
+
+def refuse(message):
+    sys.stderr.write(message + "\n")
+    raise SystemExit(REFUSED)
+
+
+def fail(message):
+    sys.stderr.write(message + "\n")
+    raise SystemExit(ERROR)
+
+
+def home():
+    return os.path.realpath(os.path.expanduser("~"))
+
+
+def within_home(path):
+    root = home()
+    return path == root or path.startswith(root + os.sep)
+
+
+def check_parent(directory):
+    """The directory is the planting ground: if others can write to it, they
+    can drop a symlink or FIFO at our filename no matter what we check next."""
+    try:
+        st = os.stat(directory)
+    except OSError as err:
+        fail("parent directory unusable: %s" % err)
+    if not stat.S_ISDIR(st.st_mode):
+        refuse("parent of the target is not a directory: %s" % directory)
+    if st.st_uid != os.geteuid():
+        refuse("parent directory is not owned by this user: %s" % directory)
+    # The sticky bit is what makes a shared directory safe; /tmp is 1777.
+    if st.st_mode & stat.S_IWOTH and not st.st_mode & stat.S_ISVTX:
+        refuse("parent directory is writable by other users: %s" % directory)
+
+
+def resolve(path, allow_symlink):
+    """Return the path to operate on.
+
+    A symlink is refused outright unless the caller opted in. The opt-in exists
+    for the user's own config file, which people legitimately symlink into a
+    dotfiles repo; even then the link has to land inside $HOME, and the target
+    still faces every check below.
+    """
+    try:
+        lst = os.lstat(path)
+    except FileNotFoundError:
+        return path
+    except OSError as err:
+        fail("cannot stat target: %s" % err)
+
+    if not stat.S_ISLNK(lst.st_mode):
+        return path
+    if not allow_symlink:
+        refuse("refusing to follow a symlink at %s" % path)
+
+    real = os.path.realpath(path)
+    if not os.path.exists(real):
+        refuse("symlink at %s is dangling" % path)
+    if not within_home(real):
+        refuse("symlink at %s resolves outside $HOME (%s)" % (path, real))
+    return real
+
+
+def validate(fd, path, max_bytes):
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        refuse("%s is not a regular file" % path)
+    if st.st_uid != os.geteuid():
+        refuse("%s is not owned by this user" % path)
+    if st.st_mode & stat.S_IWOTH:
+        refuse("%s is writable by other users" % path)
+    if st.st_size > max_bytes:
+        refuse("%s is %d bytes, over the %d byte ceiling" % (path, st.st_size, max_bytes))
+    return st
+
+
+def do_read(path, max_bytes, allow_symlink):
+    target = resolve(path, allow_symlink)
+    check_parent(os.path.dirname(target) or ".")
+
+    try:
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return ABSENT
+    except OSError as err:
+        # ELOOP is O_NOFOLLOW refusing a symlink that appeared after resolve().
+        if err.errno == 40:
+            refuse("refusing to follow a symlink at %s" % target)
+        fail("cannot open %s: %s" % (target, err))
+
+    try:
+        validate(fd, target, max_bytes)
+        chunks, total = [], 0
+        while total < max_bytes:
+            chunk = os.read(fd, max_bytes - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    finally:
+        os.close(fd)
+
+    sys.stdout.buffer.write(b"".join(chunks))
+    sys.stdout.buffer.flush()
+    return OK
+
+
+def do_write(path, max_bytes, allow_symlink, reclaim):
+    payload = sys.stdin.buffer.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        fail("refusing to write %d bytes, over the %d byte ceiling" % (len(payload), max_bytes))
+
+    if reclaim:
+        # Blackwall's own private state path, in a directory it created and
+        # nothing else uses. A symlink or FIFO there is never something we put
+        # there, and simply refusing would be its own bug: the deadline would
+        # stop persisting for good, quietly turning "restart the shell" into a
+        # way out of a lock. Take the name back instead. This is safe because
+        # the rename below replaces the name and never writes through it, so
+        # whatever a planted link pointed at is left alone.
+        target = path
+    else:
+        target = resolve(path, allow_symlink)
+    directory = os.path.dirname(target) or "."
+    check_parent(directory)
+
+    # Anything already there must be a plain file of ours before we replace it.
+    # A symlink at this point is one we were told to follow, already vetted by
+    # resolve(); anything else -- FIFO, device, someone else's file -- is not
+    # something Blackwall put here and not something it should overwrite.
+    try:
+        existing = None if reclaim else os.stat(target)
+    except FileNotFoundError:
+        existing = None
+    except OSError as err:
+        fail("cannot stat %s: %s" % (target, err))
+    if existing is not None:
+        if not stat.S_ISREG(existing.st_mode):
+            refuse("%s exists and is not a regular file" % target)
+        if existing.st_uid != os.geteuid():
+            refuse("%s is not owned by this user" % target)
+
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".blackwall-", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # rename(2) replaces the name, it does not write through a symlink.
+        os.rename(tmp, target)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return OK
+
+
+def main(argv):
+    if len(argv) != 6:
+        fail("usage: blackwall-file-guard <read|write> <path> <max-bytes>"
+             " <allow-symlink 0|1> <reclaim 0|1>")
+    mode, path, raw_max, raw_allow, raw_reclaim = argv[1:]
+
+    try:
+        max_bytes = int(raw_max)
+    except ValueError:
+        fail("max-bytes must be an integer")
+    if max_bytes <= 0:
+        fail("max-bytes must be positive")
+    if not os.path.isabs(path):
+        fail("path must be absolute")
+
+    allow_symlink = raw_allow == "1"
+    reclaim = raw_reclaim == "1"
+    if mode == "read":
+        # Reads never reclaim: a planted entry means "no valid saved state",
+        # and the next write is what takes the name back.
+        return do_read(path, max_bytes, allow_symlink)
+    if mode == "write":
+        return do_write(path, max_bytes, allow_symlink, reclaim)
+    fail("unknown mode: %s" % mode)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except BrokenPipeError:
+        raise SystemExit(ERROR)

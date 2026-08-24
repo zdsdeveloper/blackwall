@@ -9,3 +9,7 @@
 # ignored by git and picked up automatically by the plugin.
 sounds/*
 !sounds/README.md
+
+# Byte-compiled guard, if anything ever imports it
+__pycache__/
+*.pyc

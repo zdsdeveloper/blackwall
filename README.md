@@ -72,10 +72,16 @@ or use the recovery path below.
 - **`qt6-shadertools`** *(only to develop)* — supplies `qsb` for rebuilding
   `glitch.frag.qsb`. Not needed to run the plugin; the compiled shader ships
   in the repo.
+- **`python3`** — runs `bin/blackwall-file-guard`, which is how the two state
+  files are read and written (see [State files](#state-files)). Already present
+  on every Omarchy system: `omarchy` depends on `uwsm`, which depends on
+  `python`. Nothing is installed with `pip`; the guard uses only the standard
+  library.
 
-No network access, no privilege escalation, no systemd units. The only
-external processes it starts are `mkdir -p`, `cat /proc/sys/kernel/random/boot_id`,
-and `test -f`.
+No network access, no privilege escalation, no systemd units. The only external
+processes it starts are `mkdir`/`chmod` for its state directory,
+`cat /proc/sys/kernel/random/boot_id`, a `bash` glob to find an audio file, and
+`python3 bin/blackwall-file-guard` to touch its own two files.
 
 ## Files
 
@@ -84,6 +90,9 @@ and `test -f`.
 | `manifest.json`          | Plugin manifest — one `bar-widget`, one `service`         |
 | `BarWidget.qml`          | Bar button, duration menu, persistence toggle             |
 | `Service.qml`            | Owns the session lock, the countdown, and both files      |
+| `GuardedFile.qml`        | Read/write access to one file, via the guard below        |
+| `bin/blackwall-file-guard` | Bounded, no-follow reads and writes (see below)          |
+| `tests/test-file-guard.sh` | Exercises the guard against symlinks, FIFOs, and the rest |
 | `BlackwallLockView.qml`  | What the lock surface paints, and the ambience            |
 | `GhostFaces.qml`         | The apparition layer for the release sequence             |
 | `Faces.js`               | The faces, as shaded block text                           |
@@ -100,12 +109,63 @@ Two files outside this directory:
 | Path                                            | What it is                        |
 |-------------------------------------------------|-----------------------------------|
 | `~/.config/omarchy/zds.blackwall.json`          | User config (the toggle)          |
-| `~/.local/state/omarchy/blackwall/deadline`     | Live lock state                   |
+| `~/.local/state/omarchy/blackwall/deadline`     | Live lock state (mode `0600`)     |
 
 Everything under `~/.config/omarchy/plugins/` hot-reloads on save. If a change
 does not take, `omarchy-shell shell rescanPlugins` forces a reload — but note
 that the QML engine caches a type that *failed* to compile, so after fixing a
 syntax error you need `omarchy restart shell`, not a rescan.
+
+## State files
+
+Both of Blackwall's files live at paths that are entirely predictable, and one
+of them decides whether a lock is still owed. Qt's `FileView` is not a safe way
+to open either: it has no size ceiling, so a read lands whole in the shell's
+heap; it has no type check, so a FIFO left at the path blocks the open; and its
+atomic write resolves a symlink and writes through to the target.
+
+So neither file is touched through `FileView`. Everything goes through
+`bin/blackwall-file-guard`, which validates an already-open descriptor rather
+than a path:
+
+```
+open(O_NOFOLLOW | O_NONBLOCK) -> fstat(fd) -> read(fd, <= 64 KiB)
+```
+
+`O_NOFOLLOW` makes a planted symlink fail at `open()`. `O_NONBLOCK` is what
+stops a FIFO from hanging the open itself — the one check that cannot be made
+after the fact. Because the type, owner, mode and size are checked against the
+descriptor and not the path, there is no window in which the file can be swapped
+underneath the check. Writes go to a fresh `0600` temp file in the same
+directory and are renamed into place; `rename(2)` replaces the name rather than
+writing through a link.
+
+A file is refused if it is not a regular file, is not owned by you, is writable
+by other users, is larger than 64 KiB, or sits in a directory other users can
+write to. The state directory is created `0700`.
+
+The two files get deliberately different treatment:
+
+- **`deadline`** is Blackwall's own, in a directory nothing else uses. Symlinks
+  are refused. A write may take the name back from something planted there —
+  refusing forever would quietly stop the deadline persisting, which would turn
+  restarting the shell into a way out of a lock.
+- **`zds.blackwall.json`** is *yours*. Symlinks are allowed, so keeping it in a
+  dotfiles repo and linking it into place works; the link has to resolve inside
+  `$HOME` and the target still faces every check above. Nothing there is ever
+  replaced or deleted. If the path is refused, Blackwall runs on defaults in
+  memory and will not write to it at all — `blackwall status` reports
+  `configWritable: false`, and the settings commands say so.
+
+A refused read never stalls startup: it resolves as "no saved lock", exactly as
+an empty file would, and every guard run has a 5-second watchdog behind it.
+
+All of the above is covered by `tests/test-file-guard.sh`, which plants each
+kind of entry at a real path and checks what the guard does with it:
+
+```bash
+./tests/test-file-guard.sh
+```
 
 ## How it works
 
