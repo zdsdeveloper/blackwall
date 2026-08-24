@@ -1,10 +1,65 @@
 # Blackwall
 
+![Blackwall lock screen](preview.png)
+
 A timed session lock with no way out. Pick a duration from the bar; the
 session locks and stays locked until the timer runs out.
 
 There is no password prompt, no cancel button, and no unlock IPC method.
 That is the point.
+
+## Install
+
+```bash
+omarchy plugin add https://github.com/zdsdeveloper/blackwall.git
+omarchy plugin enable zds.blackwall
+```
+
+`omarchy plugin add` clones into `~/.config/omarchy/plugins/zds.blackwall/`
+(named by the manifest id) and leaves the plugin **disabled** so you can read
+the code before running it. Plugins run unsandboxed inside `omarchy-shell`;
+that pause is the point, so take it.
+
+Enabling puts the button in the bar's right section. Move it with:
+
+```bash
+omarchy bar move zds.blackwall --section center
+```
+
+## Remove
+
+```bash
+omarchy plugin remove zds.blackwall
+```
+
+That takes the widget out of the bar and deletes the checkout. Two things
+live outside the plugin directory and are left behind on purpose — remove
+them by hand if you want no trace:
+
+```bash
+rm ~/.config/omarchy/zds.blackwall.json              # the persistence toggle
+rm -rf ~/.local/state/omarchy/blackwall              # live lock state
+```
+
+**Removing the plugin while a lock is engaged does not unlock the session.**
+The compositor holds the lock, not the plugin. Let the timer run out first,
+or use the recovery path below.
+
+## Requirements
+
+- **Omarchy 4.0+** — the Quickshell shell, `WlSessionLock`, and the
+  `omarchy plugin` commands. It will not load on the older waybar-based shell.
+- **A monospace font with block-drawing glyphs** (`▀ ▄ █ ░ ▒ ▓`). Any Nerd
+  Font has them; Omarchy's default JetBrainsMono Nerd Font is fine.
+- **`qt6-multimedia`** *(optional)* — only for the ambience. Without it, or
+  without `sounds/blackwall.mp3`, the lock is simply silent.
+- **`qt6-shadertools`** *(only to develop)* — supplies `qsb` for rebuilding
+  `glitch.frag.qsb`. Not needed to run the plugin; the compiled shader ships
+  in the repo.
+
+No network access, no privilege escalation, no systemd units. The only
+external processes it starts are `mkdir -p`, `cat /proc/sys/kernel/random/boot_id`,
+and `test -f`.
 
 ## Files
 
@@ -248,3 +303,17 @@ player is built, and the lock is simply silent.
 On a multi-monitor setup one lock surface exists per output, all running the
 same view. Exactly one claims the audio via `Service.claimAudio()`, or the
 ambience plays once per monitor slightly out of phase.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Copyright (C) 2026 Zamil Suarez.
+
+**Scope:** the license covers the plugin source in this repository. It does
+**not** cover `sounds/blackwall.mp3` — that is "Cyberpunk 2077 — Standing in
+front of the Blackwall (Ambience)" by Anendale, included here for convenience
+and owned by its respective rights holders. It is not mine to license, and
+nothing in the GPL grant applies to it. If you fork or redistribute this
+plugin, delete that file; the plugin runs silent without it and the audio is
+strictly optional.
