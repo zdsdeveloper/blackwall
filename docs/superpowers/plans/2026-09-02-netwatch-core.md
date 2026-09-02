@@ -20,6 +20,16 @@
 - No file in this phase punishes the operator. Breaches are recorded only.
 - No README section, comment, or docstring explains how to disable NetWatch.
 - Domain normalisation is defined once, in `blocklist.normalize`. Nothing else lowercases or strips.
+- **No step runs bare `sudo`.** There is no passwordless sudo on this machine
+  (`sudo -n true` fails), so an agent has nowhere to type a password. Scripts
+  self-elevate with the `require_root` pattern below — `sudo` when a terminal is
+  attached, `pkexec` otherwise. Steps marked **[operator]** must be run by the
+  user in their own terminal with a `!` prefix; an agent must stop and hand them
+  over rather than attempt them.
+- The privilege pattern is copied from Omarchy's own
+  `/usr/bin/omarchy-theme-set-browser-policy`. Root-phase scripts pin
+  `PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin` so a dev
+  link cannot resolve a helper out of a user-writable checkout.
 
 ---
 
@@ -507,7 +517,7 @@ The spec expects `/etc/zen/policies/policies.json` because `application.ini` has
 path being right, and a wrong path fails silently — the wall would look armed
 and DoH would still be on. So it gets confirmed by observation, not inference.
 
-- [ ] **Step 1: Write a probe policy to the expected path**
+- [ ] **Step 1: Write a probe policy to the expected path** — **[operator]**
 
 ```bash
 sudo mkdir -p /etc/zen/policies
@@ -515,7 +525,7 @@ printf '%s\n' '{"policies":{"DNSOverHTTPS":{"Enabled":false,"Locked":true}}}' \
   | sudo tee /etc/zen/policies/policies.json >/dev/null
 ```
 
-- [ ] **Step 2: Restart Zen fully and check that the policy is live**
+- [ ] **Step 2: Restart Zen fully and check that the policy is live** — **[operator]**
 
 Fully quit Zen (not just the window), relaunch, and open `about:policies`.
 Expected: an **Active** tab listing `DNSOverHTTPS` with `Enabled: false`.
@@ -1385,10 +1395,29 @@ esac
 
 ```bash
 #!/bin/bash
-# Install NetWatch. Run from the repo root: sudo ./netwatch/install.sh
+# Install NetWatch. From the repo root: ./netwatch/install.sh
 set -euo pipefail
 
-[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh"
+
+# Omarchy's own privileged helpers use this shape -- see
+# /usr/bin/omarchy-theme-set-browser-policy. sudo when a terminal is attached to
+# take the password, pkexec when one is not: an agent or a graphical launcher
+# has nowhere to type it.
+require_root() {
+  if (( EUID == 0 )); then
+    return
+  elif [[ -t 0 ]]; then
+    exec sudo "$SELF" "$@"
+  else
+    exec pkexec "$SELF" "$@"
+  fi
+}
+require_root "$@"
+
+# Root phase: a dev link can prepend a user-writable bin/ to secure_path, so
+# pin PATH before calling install, cp or systemctl by bare name.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install -d -m 0755 /usr/local/lib/blackwall-netwatch
@@ -1424,12 +1453,12 @@ netwatch/**/ledger.jsonl
 EOF
 ```
 
-- [ ] **Step 4: Install and verify end to end**
+- [ ] **Step 4: Install and verify end to end** — **[operator]**
 
 ```bash
 cd ~/.config/omarchy/plugins/zds.blackwall
 chmod +x netwatch/install.sh netwatch/bin/netwatch-hook
-sudo ./netwatch/install.sh
+./netwatch/install.sh
 netwatchctl status
 netwatchctl add example.com
 grep -A3 'blackwall-netwatch' /etc/hosts
@@ -1440,7 +1469,7 @@ Expected: `status` prints counts; `add` prints `blocked: example.com`; the hosts
 region contains `0.0.0.0 example.com` and `0.0.0.0 www.example.com`;
 `getent hosts example.com` resolves to `0.0.0.0`.
 
-- [ ] **Step 5: Verify a package transaction does not register as a breach**
+- [ ] **Step 5: Verify a package transaction does not register as a breach** — **[operator]**
 
 ```bash
 netwatchctl status                       # note the breach count
@@ -1489,7 +1518,7 @@ Cover: what NetWatch is, the commitment-device framing, the scope boundary
 removal in this phase, and that the blocklist lives in `/var/lib/blackwall` and
 is never committed. **Do not document how to stop, disable, or uninstall it.**
 
-- [ ] **Step 3: Arm the unit**
+- [ ] **Step 3: Arm the unit** — **[operator]** for the shell commands
 
 Add to the `[Unit]` section of `netwatch/units/blackwall-netwatch.service`:
 
@@ -1502,7 +1531,7 @@ sudo, and reinstall:
 
 ```bash
 cd ~/.config/omarchy/plugins/zds.blackwall
-sudo ./netwatch/install.sh
+./netwatch/install.sh
 sudo chattr +a /var/lib/blackwall/blocklist
 sudo chattr +a /var/lib/blackwall/ledger.jsonl
 lsattr /var/lib/blackwall/
@@ -1510,7 +1539,7 @@ lsattr /var/lib/blackwall/
 
 Expected: both files show the `a` attribute.
 
-- [ ] **Step 4: Verify arming took**
+- [ ] **Step 4: Verify arming took** — **[operator]**
 
 ```bash
 sudo systemctl stop blackwall-netwatch.service    # must be refused
