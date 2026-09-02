@@ -1,8 +1,9 @@
 import json
 import os
 import tempfile
+import time
 import unittest
-from blackwall_netwatch import ledger
+from blackwall_netwatch import daemon, ledger
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
@@ -30,7 +31,7 @@ class TestNetWatch(unittest.TestCase):
         os.makedirs(os.path.dirname(self.paths.zen_package_policy))
         with open(self.paths.zen_package_policy, "w") as f:
             json.dump({"policies": {"DisableAppUpdate": True}}, f)
-        self.nw = NetWatch(self.paths)
+        self.nw = NetWatch(self.paths, flusher=lambda: None)
 
     def test_starts_empty(self):
         self.assertEqual(self.nw.domains(), [])
@@ -144,6 +145,27 @@ class TestNetWatch(unittest.TestCase):
         os.unlink(self.paths.zen_policy)
         nw.enforce()
         self.assertEqual(len(calls), 1)
+
+    def test_a_blocklist_with_invalid_utf8_does_not_raise(self):
+        # A corrupted blocklist must cost the unreadable bytes, not the daemon.
+        self.nw.add("a.com")
+        with open(self.paths.blocklist, "ab") as f:
+            f.write(b"\xff\xfe not utf-8\n")
+        self.assertEqual(self.nw.domains(), ["a.com"])
+
+    def test_status_survives_a_corrupt_blocklist(self):
+        self.nw.add("a.com")
+        with open(self.paths.blocklist, "ab") as f:
+            f.write(b"\xff\xfe\n")
+        self.assertEqual(self.nw.status()["domains"], 1)
+
+    def test_the_default_flusher_returns_promptly_when_not_root(self):
+        # Guards the stall: unprivileged, this must not sit on polkit.
+        if os.geteuid() == 0:
+            self.skipTest("this asserts the non-root path")
+        started = time.monotonic()
+        daemon.flush_resolver_cache()
+        self.assertLess(time.monotonic() - started, 1.0)
 
 
 if __name__ == "__main__":

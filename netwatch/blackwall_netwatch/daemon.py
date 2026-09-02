@@ -32,12 +32,18 @@ def flush_resolver_cache():
     Best effort by design: on a machine not running resolved this is a no-op,
     and a failure here must never be louder than the enforcement it follows.
     """
+    # Only root can flush resolved's cache, and an unprivileged call does not
+    # fail fast -- it blocks on polkit waiting for an authentication agent a
+    # daemon has not got. The check is about not stalling, not about permission.
+    if os.geteuid() != 0:
+        return
     try:
         subprocess.run(
             ["resolvectl", "flush-caches"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=5,
+            stdin=subprocess.DEVNULL,
+            timeout=1,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -51,9 +57,13 @@ class NetWatch:
 
     def domains(self):
         try:
-            with open(self.paths.blocklist) as f:
+            # errors="replace" for the same reason ledger.read uses it: a
+            # corrupted blocklist must cost the unreadable bytes, never the
+            # daemon. A replacement character fails normalisation, so parse()
+            # drops that line and keeps the rest.
+            with open(self.paths.blocklist, encoding="utf-8", errors="replace") as f:
                 return blocklist.parse(f.read())
-        except OSError:
+        except (OSError, ValueError):
             return []
 
     def add(self, raw):
