@@ -67,5 +67,48 @@ class TestApply(unittest.TestCase):
         self.assertEqual(os.listdir(self.dir), ["hosts"])
 
 
+class TestSpliceMalformed(unittest.TestCase):
+    def test_dangling_begin_does_not_eat_surrounding_entries(self):
+        # The bug this guards: a stray marker used to make everything between it
+        # and the next END vanish, operator entries included.
+        corrupt = STOCK + hosts.BEGIN + "\n10.0.0.9 keepme\n"
+        out = hosts.splice(corrupt, hosts.render(["a.com"]))
+        self.assertIn("10.0.0.9 keepme", out)
+        self.assertIn("127.0.0.1 localhost", out)
+        self.assertEqual(out.count(hosts.BEGIN), 1)
+
+    def test_dangling_end_costs_only_its_own_line(self):
+        corrupt = STOCK + hosts.END + "\n10.0.0.9 keepme\n"
+        out = hosts.splice(corrupt, hosts.render(["a.com"]))
+        self.assertIn("10.0.0.9 keepme", out)
+        self.assertEqual(out.count(hosts.END), 1)
+
+    def test_end_before_begin_does_not_double_the_markers(self):
+        corrupt = STOCK + hosts.END + "\n" + hosts.BEGIN + "\n"
+        out = hosts.splice(corrupt, hosts.render(["a.com"]))
+        self.assertEqual(out.count(hosts.BEGIN), 1)
+        self.assertEqual(out.count(hosts.END), 1)
+
+    def test_marker_text_inside_a_comment_is_not_a_marker(self):
+        noise = "# see " + hosts.BEGIN + " for details\n" + STOCK
+        out = hosts.splice(noise, hosts.render(["a.com"]))
+        self.assertIn("# see", out)
+        self.assertIn("127.0.0.1 localhost", out)
+
+    def test_malformed_input_still_settles_to_idempotent(self):
+        corrupt = STOCK + hosts.BEGIN + "\n10.0.0.9 keepme\n"
+        once = hosts.splice(corrupt, hosts.render(["a.com"]))
+        twice = hosts.splice(once, hosts.render(["a.com"]))
+        self.assertEqual(once, twice)
+
+
+class TestRenderBothFamilies(unittest.TestCase):
+    def test_emits_an_ipv6_sink_beside_every_ipv4_sink(self):
+        out = hosts.render(["a.com"])
+        for host in ("a.com", "www.a.com"):
+            self.assertIn("0.0.0.0 " + host, out)
+            self.assertIn(":: " + host, out)
+
+
 if __name__ == "__main__":
     unittest.main()
