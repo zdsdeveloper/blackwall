@@ -1405,12 +1405,15 @@ mkdir -p /run/blackwall
 case "${1:-}" in
   begin) : > "$marker" ;;
   end)
-    # Repair anything the transaction replaced BEFORE dropping the marker --
-    # the daemon has to see the window still open or it reads its own repair as
-    # tampering. Deliberately not a systemctl restart: once the unit is armed
-    # with RefuseManualStop, restart is refused and the repair would never run.
-    /usr/local/bin/netwatchctl enforce >/dev/null 2>&1 || true
-    rm -f "$marker"
+    # Repair inside the window, and let the DAEMON drop the marker as part of
+    # the same call. The hook must never remove it itself: if this enforce fails
+    # for any reason -- daemon busy, socket gone, timeout -- an optimistic
+    # `rm` would leave changed files with no window open, and the next cycle
+    # would call a routine system upgrade a breach. If the call never lands the
+    # marker simply ages out under the staleness bound.
+    # Deliberately not a systemctl restart either: once the unit is armed with
+    # RefuseManualStop, restart is refused and the repair would never run.
+    /usr/local/bin/netwatchctl enforce --close-window >/dev/null 2>&1 || true
     ;;
   *) echo "usage: netwatch-hook begin|end" >&2; exit 2 ;;
 esac
