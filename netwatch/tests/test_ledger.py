@@ -35,6 +35,40 @@ class TestLedger(unittest.TestCase):
         ledger.record(self.path, "added", domain="a.com")
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o644)
 
+    def test_truncated_multibyte_sequence_does_not_raise(self):
+        # A killed process can cut a UTF-8 character in half at EOF. That must
+        # cost the damaged entry, never the call.
+        ledger.record(self.path, "added", domain="a.com")
+        with open(self.path, "ab") as f:
+            f.write(b'{"kind": "added", "domain": "caf\xc3')
+        entries = ledger.read(self.path)
+        self.assertEqual([e["kind"] for e in entries], ["added"])
+
+    def test_valid_json_that_is_not_an_object_is_skipped(self):
+        ledger.record(self.path, "added", domain="a.com")
+        with open(self.path, "a") as f:
+            f.write("[1, 2]\n")
+            f.write('"text"\n')
+            f.write("3\n")
+        entries = ledger.read(self.path)
+        self.assertEqual(len(entries), 1)
+        self.assertTrue(all(isinstance(e, dict) for e in entries))
+
+    def test_mode_is_guaranteed_regardless_of_umask(self):
+        old = os.umask(0o077)
+        try:
+            path = os.path.join(self.dir, "restrictive.jsonl")
+            ledger.record(path, "added", domain="a.com")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+        finally:
+            os.umask(old)
+
+    def test_a_line_containing_a_nul_byte_costs_only_that_line(self):
+        ledger.record(self.path, "added", domain="a.com")
+        with open(self.path, "ab") as f:
+            f.write(b'{"kind": "x"}\x00\n')
+        self.assertEqual(len(ledger.read(self.path)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
