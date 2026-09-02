@@ -13,3 +13,9 @@ sounds/*
 # Byte-compiled guard, if anything ever imports it
 __pycache__/
 *.pyc
+
+# The blocklist is personal and this repo is public. It lives in
+# /var/lib/blackwall and must never appear here.
+netwatch/**/blocklist
+netwatch/**/blocklist.*
+netwatch/**/ledger.jsonl

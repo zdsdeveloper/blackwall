@@ -1,0 +1,16 @@
+[Unit]
+Description=NetWatch - Blackwall integrity daemon
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/blackwall-netwatch
+Restart=always
+RestartSec=2
+RuntimeDirectory=blackwall
+RuntimeDirectoryMode=0755
+StateDirectory=blackwall
+StateDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

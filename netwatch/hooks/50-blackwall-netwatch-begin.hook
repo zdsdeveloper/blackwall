@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = NetWatch: opening sanctioned transaction window
+When = PreTransaction
+Exec = /usr/local/bin/netwatch-hook begin
