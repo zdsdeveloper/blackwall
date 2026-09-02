@@ -41,10 +41,14 @@ def render(package_policies):
 def apply(path, package_policies):
     desired = render(package_policies)
     try:
-        with open(path) as f:
+        # errors="replace" and ValueError alongside OSError for the same reason
+        # read_package_policies guards both: a file we are about to rewrite
+        # anyway must never be able to abort the enforcement loop by being
+        # unreadable. Anything that is not exactly `desired` gets rewritten.
+        with open(path, encoding="utf-8", errors="replace") as f:
             if f.read() == desired:
                 return False
-    except OSError:
+    except (OSError, ValueError):
         pass
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, mode=0o755, exist_ok=True)

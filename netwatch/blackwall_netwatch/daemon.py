@@ -54,6 +54,10 @@ class NetWatch:
     def __init__(self, paths, flusher=flush_resolver_cache):
         self.paths = paths
         self.flusher = flusher
+        # Consecutive failed enforcement cycles. The server owns it; status
+        # reports it. A wall that has stopped being repaired has to be visible
+        # somewhere, or "the daemon is up" reads as "the wall is up".
+        self.enforce_failures = 0
 
     def domains(self):
         try:
@@ -111,10 +115,25 @@ class NetWatch:
             for e in ledger.read(self.paths.ledger)
         )
 
+    def close_window(self):
+        """Drop the sanctioned-transaction marker.
+
+        Only ever called after an enforcement that actually completed. The hook
+        used to remove this itself, which meant a failed or undelivered enforce
+        left changed files behind with no window open -- and the next cycle
+        called a routine system upgrade a breach.
+        """
+        try:
+            os.unlink(self.paths.window_marker)
+        except OSError:
+            pass
+
     def status(self):
         entries = ledger.read(self.paths.ledger)
         return {
             "domains": len(self.domains()),
-            "breaches": len([e for e in entries if e["kind"] == "breach"]),
-            "armed": os.path.exists(self.paths.blocklist),
+            # .get, matching _enforced_before: a truncated or hand-written
+            # ledger line without a "kind" must not take status down with it.
+            "breaches": len([e for e in entries if e.get("kind") == "breach"]),
+            "enforce_failures": self.enforce_failures,
         }

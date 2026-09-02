@@ -85,6 +85,16 @@ class TestApply(unittest.TestCase):
         zenpolicy.apply(self.path, PACKAGE)
         self.assertEqual(os.listdir(self.dir), ["policies.json"])
 
+    def test_invalid_utf8_in_an_existing_file_is_rewritten_not_fatal(self):
+        # The comparison read guarded only OSError; a decode error escaping it
+        # would take down the enforcement loop over a file we rewrite anyway.
+        with open(self.path, "wb") as f:
+            f.write(b'{"policies": {"x": "\xff\xfe"}}')
+        self.assertTrue(zenpolicy.apply(self.path, PACKAGE))
+        with open(self.path) as f:
+            got = json.load(f)["policies"]["DNSOverHTTPS"]
+        self.assertEqual(got, {"Enabled": False, "Locked": True})
+
 
 if __name__ == "__main__":
     unittest.main()

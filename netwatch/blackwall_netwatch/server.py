@@ -32,7 +32,10 @@ def handle(nw, request):
         reply.update(nw.status())
         return reply
     if cmd == "enforce":
-        return {"ok": True, "result": nw.enforce()}
+        result = nw.enforce()
+        if request.get("close_window"):
+            nw.close_window()
+        return {"ok": True, "result": result}
     return {"ok": False, "error": "unknown command: %r" % (cmd,)}
 
 
@@ -47,15 +50,32 @@ def _enforce_quietly(nw):
     wall that is not up.
 
     Exception, not BaseException: a shutdown signal must still stop the daemon.
+
+    The counter is the other half of the backstop: swallowing the exception is
+    what keeps the daemon alive, and nothing but this count would tell the
+    operator that it has been alive and not enforcing.
     """
     try:
-        return nw.enforce()
+        result = nw.enforce()
     except Exception as exc:
-        try:
-            ledger.record(nw.paths.ledger, "enforce-failed", error=repr(exc)[:200])
-        except Exception:
-            pass
+        nw.enforce_failures += 1
+        # The transition into failure, then every hundredth. This runs after
+        # every connection on a 0666 socket, so a connect/disconnect loop would
+        # otherwise drive unbounded appends into root-owned /var precisely while
+        # enforcement is broken.
+        if nw.enforce_failures == 1 or nw.enforce_failures % 100 == 0:
+            try:
+                ledger.record(
+                    nw.paths.ledger,
+                    "enforce-failed",
+                    error=repr(exc)[:200],
+                    failures=nw.enforce_failures,
+                )
+            except Exception:
+                pass
         return {"changed": False, "verdict": None, "targets": []}
+    nw.enforce_failures = 0
+    return result
 
 
 MAX_REQUEST_BYTES = 65536
@@ -74,17 +94,25 @@ def _reply(conn, payload):
         pass
 
 
-def _read_request(conn):
-    """Read one newline-terminated request, or None if the peer sent nothing.
+REQUEST_DEADLINE_SECONDS = 5
 
-    Read until the newline rather than trusting a single recv: a request that
-    spans two reads is a valid request, and answering it "malformed" would be
-    our bug, not the client's.
+
+def _read_request(conn):
+    """Read one newline-terminated request within a single overall deadline.
+
+    A per-read timeout is not enough: a peer dripping one byte at a time under
+    the limit would hold this single-threaded loop for as long as it liked, and
+    nothing is enforced while a connection is open.
     """
+    deadline = time.monotonic() + REQUEST_DEADLINE_SECONDS
     chunks = []
     total = 0
     while total < MAX_REQUEST_BYTES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
         try:
+            conn.settimeout(remaining)
             chunk = conn.recv(4096)
         except OSError:
             return None
@@ -103,7 +131,6 @@ def serve_connection(nw, conn):
     """Handle one client. Never raises -- nothing a client does may reach the
     accept loop."""
     try:
-        conn.settimeout(5)
         raw = _read_request(conn)
         if raw is None:
             return
@@ -122,6 +149,10 @@ def serve_connection(nw, conn):
 
 
 def serve(nw, interval=30):
+    # Before the socket, deliberately. Enforcement does not depend on the
+    # control channel and must not be hostage to it: if makedirs, bind or chmod
+    # fails, the managed files have already been repaired once.
+    _enforce_quietly(nw)
     path = nw.paths.socket
     os.makedirs(os.path.dirname(path) or "/", mode=0o755, exist_ok=True)
     if os.path.exists(path):
@@ -133,13 +164,17 @@ def serve(nw, interval=30):
     os.chmod(path, 0o666)
     server.listen(8)
     server.settimeout(interval)
-    _enforce_quietly(nw)
     last = time.monotonic()
     while True:
         try:
             conn, _ = server.accept()
-        except socket.timeout:
+        except TimeoutError:
             conn = None
+        except OSError:
+            # ECONNABORTED, EMFILE and the rest: one lost connection is not a
+            # reason to leave the machine unenforced. Only the timeout above is
+            # an ordinary cycle; everything else costs just this iteration.
+            continue
         if conn is not None:
             with conn:
                 serve_connection(nw, conn)

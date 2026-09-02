@@ -167,6 +167,26 @@ class TestNetWatch(unittest.TestCase):
         daemon.flush_resolver_cache()
         self.assertLess(time.monotonic() - started, 1.0)
 
+    def test_status_survives_a_ledger_line_with_no_kind(self):
+        # A truncated or hand-written line must cost that line, not the call:
+        # status is how the operator finds out whether the wall is still up.
+        with open(self.paths.ledger, "w") as f:
+            f.write(json.dumps({"at": 1}) + "\n")
+            f.write(json.dumps({"at": 2, "kind": "breach"}) + "\n")
+        self.assertEqual(self.nw.status()["breaches"], 1)
+
+    def test_close_window_removes_the_marker(self):
+        with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        self.nw.close_window()
+        self.assertFalse(os.path.exists(self.paths.window_marker))
+
+    def test_close_window_without_a_marker_is_a_no_op(self):
+        # Called after any completed enforce, including outside a package
+        # transaction, so "already gone" is the ordinary case.
+        self.nw.close_window()
+        self.assertFalse(os.path.exists(self.paths.window_marker))
+
 
 if __name__ == "__main__":
     unittest.main()

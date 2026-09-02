@@ -35,7 +35,12 @@ def main():
     add.add_argument("domain")
     sub.add_parser("list", help="show blocked domains")
     sub.add_parser("status", help="show counts")
-    sub.add_parser("enforce", help="repair the managed files now")
+    enforce = sub.add_parser("enforce", help="repair the managed files now")
+    enforce.add_argument(
+        "--close-window",
+        action="store_true",
+        help="finish a package transaction window once the repair has landed",
+    )
     args = parser.parse_args()
 
     if args.command == "add":
@@ -47,12 +52,16 @@ def main():
         for domain in call({"cmd": "list"})["domains"]:
             print(domain)
     elif args.command == "enforce":
-        result = call({"cmd": "enforce"})["result"]
+        request = {"cmd": "enforce"}
+        if args.close_window:
+            request["close_window"] = True
+        result = call(request)["result"]
         print("changed: %s" % result["changed"])
     else:
         reply = call({"cmd": "status"})
         print("domains  %d" % reply["domains"])
         print("breaches %d" % reply["breaches"])
+        print("failures %d" % reply["enforce_failures"])
 
 
 if __name__ == "__main__":

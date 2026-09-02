@@ -12,6 +12,11 @@ class TestNormalize(unittest.TestCase):
     def test_keeps_non_www_subdomains(self):
         self.assertEqual(normalize("cdn.example.com"), "cdn.example.com")
 
+    def test_strips_every_www_prefix_not_just_the_first(self):
+        # One strip left "www.www.example.com" as "www.example.com", so the
+        # apex was never blocked -- a hole in the wall from a one-word paste.
+        self.assertEqual(normalize("www.www.example.com"), "example.com")
+
     def test_rejects_bare_label(self):
         with self.assertRaises(InvalidDomain):
             normalize("localhost")

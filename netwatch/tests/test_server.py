@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 import tempfile
+import time
 import unittest
 from blackwall_netwatch.daemon import NetWatch, Paths
 from blackwall_netwatch.server import handle
@@ -53,6 +54,21 @@ class TestHandle(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertTrue(reply["result"]["changed"])
 
+    def test_enforce_with_close_window_drops_the_marker(self):
+        # The hook used to rm this itself; a failed or undelivered enforce then
+        # left changed files with no window open and the next cycle called a
+        # routine upgrade a breach. Only a completed enforce may close it.
+        with open(self.nw.paths.window_marker, "w") as f:
+            f.write("")
+        handle(self.nw, {"cmd": "enforce", "close_window": True})
+        self.assertFalse(os.path.exists(self.nw.paths.window_marker))
+
+    def test_enforce_without_the_flag_leaves_the_marker(self):
+        with open(self.nw.paths.window_marker, "w") as f:
+            f.write("")
+        handle(self.nw, {"cmd": "enforce"})
+        self.assertTrue(os.path.exists(self.nw.paths.window_marker))
+
     def test_remove_is_not_a_command(self):
         reply = handle(self.nw, {"cmd": "remove", "domain": "a.com"})
         self.assertFalse(reply["ok"])
@@ -69,9 +85,23 @@ class TestHandle(unittest.TestCase):
 class _Exploding:
     def __init__(self, paths):
         self.paths = paths
+        self.enforce_failures = 0
 
     def enforce(self):
         raise RuntimeError("boom")
+
+
+class _Flaky(_Exploding):
+    """Fails until told otherwise."""
+
+    def __init__(self, paths):
+        _Exploding.__init__(self, paths)
+        self.failing = True
+
+    def enforce(self):
+        if self.failing:
+            raise RuntimeError("boom")
+        return {"changed": False, "verdict": None, "targets": []}
 
 
 class TestEnforceBackstop(unittest.TestCase):
@@ -96,6 +126,26 @@ class TestEnforceBackstop(unittest.TestCase):
         result = server._enforce_quietly(_Exploding(broken))
         self.assertFalse(result["changed"])
 
+    def test_the_failure_count_rises_and_clears(self):
+        # The only signal that the daemon is up and not enforcing.
+        nw = _Flaky(self.paths)
+        server._enforce_quietly(nw)
+        self.assertEqual(nw.enforce_failures, 1)
+        nw.failing = False
+        server._enforce_quietly(nw)
+        self.assertEqual(nw.enforce_failures, 0)
+
+    def test_repeated_failures_are_recorded_once_not_once_each(self):
+        # _enforce_quietly runs after every connection on a 0666 socket, so one
+        # line per failure lets any local user drive unbounded appends into
+        # root-owned /var precisely while enforcement is broken.
+        nw = _Exploding(self.paths)
+        for _ in range(5):
+            server._enforce_quietly(nw)
+        failed = [e for e in ledger.read(self.paths.ledger)
+                  if e.get("kind") == "enforce-failed"]
+        self.assertEqual(len(failed), 1)
+
 
 class _FakeConn:
     """Drives serve_connection without a socket: scripted reads, captured writes."""
@@ -117,6 +167,48 @@ class _FakeConn:
 class _BrokenConn(_FakeConn):
     def sendall(self, data):
         raise BrokenPipeError("peer went away")
+
+
+class _DrippingConn:
+    """A peer that keeps sending, slowly, and never sends a newline.
+
+    The old loop bounded each individual recv and nothing else, so this pattern
+    held the single-threaded accept loop for as long as the peer cared to keep
+    it -- and nothing is enforced while a connection is open.
+    """
+
+    def __init__(self, per_recv):
+        self.per_recv = per_recv
+        self.timeout = None
+        self.recv_calls = 0
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
+
+    def recv(self, size):
+        self.recv_calls += 1
+        budget = self.per_recv if self.timeout is None else self.timeout
+        time.sleep(min(self.per_recv, budget))
+        if self.timeout is not None and self.per_recv > self.timeout:
+            raise TimeoutError("timed out")
+        return b"x"
+
+
+class TestReadRequestDeadline(unittest.TestCase):
+    def test_a_dripping_peer_is_cut_off_at_the_deadline(self):
+        conn = _DrippingConn(per_recv=0.01)
+        original = server.REQUEST_DEADLINE_SECONDS
+        server.REQUEST_DEADLINE_SECONDS = 0.05
+        try:
+            started = time.monotonic()
+            self.assertIsNone(server._read_request(conn))
+            elapsed = time.monotonic() - started
+        finally:
+            server.REQUEST_DEADLINE_SECONDS = original
+        self.assertLess(elapsed, 1.0)
+        # Cut off by the clock, not by the byte cap: the cap alone would have
+        # let this run for 65536 reads at whatever pace the peer chose.
+        self.assertLess(conn.recv_calls, 100)
 
 
 class TestServeConnection(unittest.TestCase):

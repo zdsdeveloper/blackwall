@@ -27,7 +27,9 @@ def normalize(raw):
     d = d.rstrip(".")
     # Stored apex-only; hosts rendering puts the www back. Keeping both forms in
     # the list would mean two entries to remove and one of them forgotten.
-    if d.startswith("www."):
+    # while, not if: "www.www.example.com" would otherwise normalise to
+    # "www.example.com" and leave the apex unblocked.
+    while d.startswith("www."):
         d = d[4:]
     if not d or len(d) > 253:
         raise InvalidDomain(raw)

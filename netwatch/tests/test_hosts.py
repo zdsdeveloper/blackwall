@@ -66,6 +66,24 @@ class TestApply(unittest.TestCase):
         hosts.apply(self.path, ["a.com"])
         self.assertEqual(os.listdir(self.dir), ["hosts"])
 
+    def test_invalid_utf8_does_not_raise_and_the_region_is_still_written(self):
+        # hosts.apply is the FIRST call in enforce(), so a single stray byte in
+        # /etc/hosts raising here would mean nothing is ever enforced again --
+        # no hosts region, no DoH lock -- while the service still looks healthy.
+        with open(self.path, "ab") as f:
+            f.write(b"10.0.0.9 caf\xe9-box\n")
+        self.assertTrue(hosts.apply(self.path, ["a.com"]))
+        with open(self.path, encoding="utf-8", errors="replace") as f:
+            self.assertIn("0.0.0.0 a.com", f.read())
+
+    def test_a_missing_file_is_created_not_an_error(self):
+        # Refusing to act because the file we are meant to own is not there
+        # would be the same silent no-enforcement failure.
+        missing = os.path.join(self.dir, "hosts-gone")
+        self.assertTrue(hosts.apply(missing, ["a.com"]))
+        with open(missing) as f:
+            self.assertIn("0.0.0.0 a.com", f.read())
+
 
 class TestSpliceMalformed(unittest.TestCase):
     def test_dangling_begin_does_not_eat_surrounding_entries(self):

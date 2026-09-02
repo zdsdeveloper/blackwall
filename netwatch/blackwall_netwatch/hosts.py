@@ -69,16 +69,24 @@ def splice(current, block):
 
 
 def apply(path, domains):
-    with open(path) as f:
-        current = f.read()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            current = f.read()
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        # A missing hosts file is an empty one. Refusing to act because the file
+        # we are meant to own is not there would mean never enforcing again.
+        current = ""
+        mode = 0o644
     desired = splice(current, render(domains))
     if desired == current:
         return False
     directory = os.path.dirname(path) or "."
-    mode = os.stat(path).st_mode & 0o777
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".netwatch-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        # utf-8 explicitly: `current` was read with errors="replace", so it can
+        # carry U+FFFD, which a non-utf-8 locale encoding would refuse to write.
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(desired)
             f.flush()
             os.fsync(f.fileno())
