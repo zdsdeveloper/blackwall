@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Talk to NetWatch."""
+
+import argparse
+import json
+import socket
+import sys
+
+SOCKET = "/run/blackwall/netwatch.sock"
+
+
+def call(request):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(SOCKET)
+    except OSError as exc:
+        sys.exit("netwatch is not running (%s)" % exc)
+    with s:
+        s.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        return json.loads(s.recv(65536).decode("utf-8"))
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="netwatchctl")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add = sub.add_parser("add", help="block a domain, permanently")
+    add.add_argument("domain")
+    sub.add_parser("list", help="show blocked domains")
+    sub.add_parser("status", help="show counts")
+    sub.add_parser("enforce", help="repair the managed files now")
+    args = parser.parse_args()
+
+    if args.command == "add":
+        reply = call({"cmd": "add", "domain": args.domain})
+        if not reply["ok"]:
+            sys.exit(reply["error"])
+        print("blocked: %s" % reply["domain"])
+    elif args.command == "list":
+        for domain in call({"cmd": "list"})["domains"]:
+            print(domain)
+    elif args.command == "enforce":
+        result = call({"cmd": "enforce"})["result"]
+        print("changed: %s" % result["changed"])
+    else:
+        reply = call({"cmd": "status"})
+        print("domains  %d" % reply["domains"])
+        print("breaches %d" % reply["breaches"])
+
+
+if __name__ == "__main__":
+    main()

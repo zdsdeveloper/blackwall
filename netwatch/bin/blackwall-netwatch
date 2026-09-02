@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""NetWatch daemon entry point."""
+
+import sys
+
+sys.path.insert(0, "/usr/local/lib/blackwall-netwatch")
+
+from blackwall_netwatch.daemon import NetWatch, Paths
+from blackwall_netwatch.server import serve
+
+PATHS = Paths(
+    blocklist="/var/lib/blackwall/blocklist",
+    ledger="/var/lib/blackwall/ledger.jsonl",
+    hosts="/etc/hosts",
+    zen_policy="/etc/zen/policies/policies.json",
+    zen_package_policy="/opt/zen-browser-bin/distribution/policies.json",
+    window_marker="/run/blackwall/pacman-window",
+    pacman_lock="/var/lib/pacman/db.lck",
+    socket="/run/blackwall/netwatch.sock",
+)
+
+if __name__ == "__main__":
+    serve(NetWatch(PATHS))
