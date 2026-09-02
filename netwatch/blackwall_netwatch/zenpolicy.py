@@ -23,6 +23,11 @@ def read_package_policies(path):
             data = json.load(f)
     except (OSError, ValueError):
         return {}
+    # A file that parses but is not an object is malformed input, not an error
+    # to raise on: anything that escapes here takes down the enforcement loop,
+    # and a daemon that will not start is a wall that is not up.
+    if not isinstance(data, dict):
+        return {}
     policies = data.get("policies")
     return policies if isinstance(policies, dict) else {}
 
@@ -51,6 +56,11 @@ def apply(path, package_policies):
             os.fsync(f.fileno())
         os.chmod(tmp, 0o644)
         os.rename(tmp, path)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

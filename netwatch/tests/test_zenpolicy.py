@@ -25,6 +25,23 @@ class TestReadPackagePolicies(unittest.TestCase):
             f.write("{not json")
         self.assertEqual(zenpolicy.read_package_policies(self.path), {})
 
+    def test_top_level_list_is_empty_not_a_crash(self):
+        # Reachable by anyone with root, which the threat model assumes. If this
+        # raised, the daemon would crash-loop and stop enforcing entirely.
+        with open(self.path, "w") as f:
+            json.dump([1, 2, 3], f)
+        self.assertEqual(zenpolicy.read_package_policies(self.path), {})
+
+    def test_top_level_null_is_empty_not_a_crash(self):
+        with open(self.path, "w") as f:
+            f.write("null")
+        self.assertEqual(zenpolicy.read_package_policies(self.path), {})
+
+    def test_top_level_string_is_empty_not_a_crash(self):
+        with open(self.path, "w") as f:
+            json.dump("nope", f)
+        self.assertEqual(zenpolicy.read_package_policies(self.path), {})
+
 
 class TestRender(unittest.TestCase):
     def test_locks_doh_off(self):
@@ -63,6 +80,10 @@ class TestApply(unittest.TestCase):
         self.assertTrue(zenpolicy.apply(self.path, PACKAGE))
         got = json.loads(open(self.path).read())["policies"]["DNSOverHTTPS"]
         self.assertEqual(got, {"Enabled": False, "Locked": True})
+
+    def test_leaves_no_temp_files_behind(self):
+        zenpolicy.apply(self.path, PACKAGE)
+        self.assertEqual(os.listdir(self.dir), ["policies.json"])
 
 
 if __name__ == "__main__":
