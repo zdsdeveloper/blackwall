@@ -320,7 +320,7 @@ def apply(path, domains):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
-Expected: PASS, 15 tests total
+Expected: PASS, 16 tests total
 
 - [ ] **Step 5: Commit**
 
@@ -494,7 +494,7 @@ def apply(path, package_policies):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
-Expected: PASS, 24 tests total
+Expected: PASS, 25 tests total
 
 - [ ] **Step 5: Commit**
 
@@ -656,7 +656,7 @@ def classify(window_marker, pacman_lock, now=None):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
-Expected: PASS, 29 tests total
+Expected: PASS, 30 tests total
 
 - [ ] **Step 5: Commit**
 
@@ -779,7 +779,7 @@ def read(path):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
-Expected: PASS, 34 tests total
+Expected: PASS, 35 tests total
 
 - [ ] **Step 5: Commit**
 
@@ -1037,7 +1037,7 @@ class NetWatch:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
-Expected: PASS, 47 tests total
+Expected: PASS, 48 tests total
 
 - [ ] **Step 5: Commit**
 
@@ -1062,8 +1062,14 @@ git commit -m "netwatch: enforcement cycle with drift and breach verdicts"
 - Produces: `handle(nw: NetWatch, request: dict) -> dict`; `serve(nw: NetWatch, interval: int) -> None`
 
 Protocol is one JSON object per connection, newline-terminated, reply likewise.
-Commands: `{"cmd": "add", "domain": str}`, `{"cmd": "list"}`, `{"cmd": "status"}`.
+Commands: `{"cmd": "add", "domain": str}`, `{"cmd": "list"}`, `{"cmd": "status"}`,
+`{"cmd": "enforce"}`.
 **There is no remove command.** Removal arrives in Phase 2 behind a delay.
+
+`enforce` exists so the pacman hook can force the repair *while its window is
+still open*. Without it the hook would have to remove the marker and wait for the
+next poll, and that poll would find changed files with no window and call a
+routine system upgrade a breach.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1112,6 +1118,14 @@ class TestHandle(unittest.TestCase):
 
     def test_status_reports_counts(self):
         self.assertEqual(handle(self.nw, {"cmd": "status"})["domains"], 0)
+
+    def test_enforce_repairs_and_reports(self):
+        # The pacman hook calls this inside its window; without it the repair
+        # would land after the window closed and read as tampering.
+        handle(self.nw, {"cmd": "add", "domain": "a.com"})
+        reply = handle(self.nw, {"cmd": "enforce"})
+        self.assertTrue(reply["ok"])
+        self.assertTrue(reply["result"]["changed"])
 
     def test_remove_is_not_a_command(self):
         reply = handle(self.nw, {"cmd": "remove", "domain": "a.com"})
@@ -1172,6 +1186,8 @@ def handle(nw, request):
         reply = {"ok": True}
         reply.update(nw.status())
         return reply
+    if cmd == "enforce":
+        return {"ok": True, "result": nw.enforce()}
     return {"ok": False, "error": "unknown command: %r" % (cmd,)}
 
 
@@ -1274,6 +1290,7 @@ def main():
     add.add_argument("domain")
     sub.add_parser("list", help="show blocked domains")
     sub.add_parser("status", help="show counts")
+    sub.add_parser("enforce", help="repair the managed files now")
     args = parser.parse_args()
 
     if args.command == "add":
@@ -1284,6 +1301,9 @@ def main():
     elif args.command == "list":
         for domain in call({"cmd": "list"})["domains"]:
             print(domain)
+    elif args.command == "enforce":
+        result = call({"cmd": "enforce"})["result"]
+        print("changed: %s" % result["changed"])
     else:
         reply = call({"cmd": "status"})
         print("domains  %d" % reply["domains"])
@@ -1297,7 +1317,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
-Expected: PASS, 54 tests total
+Expected: PASS, 56 tests total
 
 - [ ] **Step 5: Commit**
 
@@ -1381,9 +1401,12 @@ mkdir -p /run/blackwall
 case "${1:-}" in
   begin) : > "$marker" ;;
   end)
+    # Repair anything the transaction replaced BEFORE dropping the marker --
+    # the daemon has to see the window still open or it reads its own repair as
+    # tampering. Deliberately not a systemctl restart: once the unit is armed
+    # with RefuseManualStop, restart is refused and the repair would never run.
+    /usr/local/bin/netwatchctl enforce >/dev/null 2>&1 || true
     rm -f "$marker"
-    # Repair anything the transaction replaced, now, while it is still drift.
-    systemctl reload-or-restart blackwall-netwatch.service 2>/dev/null || true
     ;;
   *) echo "usage: netwatch-hook begin|end" >&2; exit 2 ;;
 esac
