@@ -55,8 +55,12 @@ def main():
         request = {"cmd": "enforce"}
         if args.close_window:
             request["close_window"] = True
-        result = call(request)["result"]
-        print("changed: %s" % result["changed"])
+        reply = call(request)
+        # enforce can now be refused: --close-window is root-only. Indexing
+        # ["result"] regardless would turn that refusal into a traceback.
+        if not reply["ok"]:
+            sys.exit(reply["error"])
+        print("changed: %s" % reply["result"]["changed"])
     else:
         reply = call({"cmd": "status"})
         print("domains  %d" % reply["domains"])

@@ -27,7 +27,10 @@ class TestHandle(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         with open(os.path.join(self.dir, "hosts"), "w") as f:
             f.write("127.0.0.1 localhost\n")
-        self.nw = NetWatch(paths_in(self.dir))
+        # flusher stubbed for the same reason TestServeConnection stubs it: run
+        # as root -- entirely plausible for a root daemon -- the enforce tests
+        # below would otherwise shell out to the live resolvectl.
+        self.nw = NetWatch(paths_in(self.dir), flusher=lambda: None)
 
     def test_add_returns_the_normalised_domain(self):
         reply = handle(self.nw, {"cmd": "add", "domain": "https://WWW.A.com/"})
@@ -54,14 +57,27 @@ class TestHandle(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertTrue(reply["result"]["changed"])
 
-    def test_enforce_with_close_window_drops_the_marker(self):
+    def test_enforce_with_close_window_drops_the_marker_for_root(self):
         # The hook used to rm this itself; a failed or undelivered enforce then
         # left changed files with no window open and the next cycle called a
         # routine upgrade a breach. Only a completed enforce may close it.
         with open(self.nw.paths.window_marker, "w") as f:
             f.write("")
-        handle(self.nw, {"cmd": "enforce", "close_window": True})
+        reply = handle(
+            self.nw, {"cmd": "enforce", "close_window": True}, peer_is_root=True)
+        self.assertTrue(reply["ok"])
         self.assertFalse(os.path.exists(self.nw.paths.window_marker))
+
+    def test_close_window_is_refused_to_an_unprivileged_peer(self):
+        # The socket is 0666 so anyone may ADD. Dropping the marker is a
+        # different privilege: a local user closing the window in a loop during
+        # a pacman -Syu would make every replaced file read as tampering.
+        with open(self.nw.paths.window_marker, "w") as f:
+            f.write("")
+        reply = handle(self.nw, {"cmd": "enforce", "close_window": True})
+        self.assertFalse(reply["ok"])
+        self.assertIn("root", reply["error"])
+        self.assertTrue(os.path.exists(self.nw.paths.window_marker))
 
     def test_enforce_without_the_flag_leaves_the_marker(self):
         with open(self.nw.paths.window_marker, "w") as f:
@@ -211,6 +227,13 @@ class TestReadRequestDeadline(unittest.TestCase):
         self.assertLess(conn.recv_calls, 100)
 
 
+class TestPeerIsRoot(unittest.TestCase):
+    def test_a_connection_without_getsockopt_is_not_root(self):
+        # Fails closed: anything that cannot prove it is root is not, and the
+        # check must never raise into the connection handler to say so.
+        self.assertFalse(server._peer_is_root(_FakeConn([])))
+
+
 class _Sentinel(Exception):
     """Not an OSError, so it escapes the loop body and bounds the drive."""
 
@@ -228,6 +251,38 @@ class _FailingListener:
         if self.accepts > self.limit:
             raise _Sentinel()
         raise self.error
+
+
+class _ClosingBadlyConn(_FakeConn):
+    """A connection whose close() raises, as EBADF does.
+
+    `with conn:` sat outside every guard in the loop body, so this was one
+    syscall away from killing the daemon -- the sixth instance of this
+    project's recurring class.
+    """
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+    def close(self):
+        raise OSError("EBADF")
+
+
+class _OneConnectionListener:
+    """Hands out one connection, then raises the sentinel."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.accepts = 0
+
+    def accept(self):
+        self.accepts += 1
+        if self.accepts > 1:
+            raise _Sentinel()
+        return self.conn, None
 
 
 class _Counting:
@@ -282,6 +337,14 @@ class TestAcceptLoopKeepsEnforcing(unittest.TestCase):
     def test_the_timeout_path_still_reaches_the_periodic_enforce(self):
         nw = _Counting(self.paths)
         self._drive(_FailingListener(TimeoutError("timed out"), limit=3), nw, 5)
+        self.assertGreaterEqual(nw.calls, 1)
+
+    def test_a_connection_whose_close_raises_does_not_stop_the_loop(self):
+        nw = _Counting(self.paths)
+        conn = _ClosingBadlyConn([b'{"cmd": "status"}\n'])
+        self._drive(_OneConnectionListener(conn), nw, 3)
+        # The post-connection enforcement still ran, and the next turn was
+        # reached at all -- the sentinel is what ends the drive.
         self.assertGreaterEqual(nw.calls, 1)
 
 

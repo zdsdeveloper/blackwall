@@ -9,13 +9,14 @@ rather than a convention someone has to keep.
 import json
 import os
 import socket
+import struct
 import time
 
 from . import ledger
 from .blocklist import InvalidDomain
 
 
-def handle(nw, request):
+def handle(nw, request, peer_is_root=False):
     cmd = request.get("cmd")
     if cmd == "add":
         raw = request.get("domain")
@@ -32,8 +33,12 @@ def handle(nw, request):
         reply.update(nw.status())
         return reply
     if cmd == "enforce":
+        close = bool(request.get("close_window"))
+        if close and not peer_is_root:
+            return {"ok": False,
+                    "error": "closing a transaction window requires root"}
         result = nw.enforce()
-        if request.get("close_window"):
+        if close:
             nw.close_window()
         return {"ok": True, "result": result}
     return {"ok": False, "error": "unknown command: %r" % (cmd,)}
@@ -79,6 +84,23 @@ def _enforce_quietly(nw):
 
 
 MAX_REQUEST_BYTES = 65536
+
+
+def _peer_is_root(conn):
+    """Only root may close a transaction window.
+
+    The socket is 0666 so that anyone may ADD a domain -- that asymmetry is the
+    whole design. Closing the pacman window is a different privilege: a local
+    user able to drop the marker at will could make every file a genuine system
+    upgrade replaces read as tampering.
+    """
+    try:
+        raw = conn.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", raw)
+        return uid == 0
+    except (OSError, AttributeError, struct.error):
+        return False
 
 
 def _reply(conn, payload):
@@ -134,13 +156,18 @@ def serve_connection(nw, conn):
         raw = _read_request(conn)
         if raw is None:
             return
+        # The read left whatever was still on its deadline as the socket
+        # timeout. A client that dribbled its request for nearly the whole five
+        # seconds would otherwise get a millisecond to accept the reply, and a
+        # long `list` would truncate. The reply gets its own full budget.
+        conn.settimeout(REQUEST_DEADLINE_SECONDS)
         try:
             request = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             _reply(conn, {"ok": False, "error": "malformed request"})
             return
         try:
-            reply = handle(nw, request)
+            reply = handle(nw, request, _peer_is_root(conn))
         except Exception:
             reply = {"ok": False, "error": "internal error"}
         _reply(conn, reply)
@@ -168,8 +195,14 @@ def _serve_once(nw, server, last, interval):
         # and starve the very repair it is skipping.
         time.sleep(0.1)
     if conn is not None:
-        with conn:
-            serve_connection(nw, conn)
+        try:
+            with conn:
+                serve_connection(nw, conn)
+        except OSError:
+            # socket.close() raises -- EBADF is reachable -- and it sits
+            # outside serve_connection's own guard. Hanging up on a client is
+            # not a reason to stop enforcing.
+            pass
         _enforce_quietly(nw)
         return time.monotonic()
     if time.monotonic() - last >= interval:
