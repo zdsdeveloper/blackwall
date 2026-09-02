@@ -16,7 +16,11 @@
 - **The blocklist is never committed.** `/var/lib/blackwall/` is outside the repo; add `netwatch/**/blocklist*` to `.gitignore` anyway as a second guard.
 - Python 3 stdlib only. No pip, no new packages.
 - Every module takes explicit paths as arguments. No module hardcodes `/etc/hosts` or any real system path at import time — tests must run against a tmpdir without root.
-- Tests are `unittest`, run with `python3 -m unittest discover -s netwatch/tests -t netwatch`.
+- Tests are `unittest`, run with `PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests`.
+  Python 3.13+ refuses a non-importable discovery start directory, so the
+  `-t netwatch` form fails on this machine's 3.14.7. `netwatch/tests/` still gets
+  no `__init__.py`, and neither does `netwatch/` — `PYTHONPATH` is what puts the
+  package on the path.
 - No file in this phase punishes the operator. Breaches are recorded only.
 - No README section, comment, or docstring explains how to disable NetWatch.
 - Domain normalisation is defined once, in `blocklist.normalize`. Nothing else lowercases or strips.
@@ -92,7 +96,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'blackwall_netwatch'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -152,7 +156,7 @@ def parse(text):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 7 tests
 
 - [ ] **Step 5: Commit**
@@ -253,7 +257,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ImportError: cannot import name 'hosts'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -319,7 +323,7 @@ def apply(path, domains):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 16 tests total
 
 - [ ] **Step 5: Commit**
@@ -425,7 +429,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ImportError: cannot import name 'zenpolicy'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -493,7 +497,7 @@ def apply(path, package_policies):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 25 tests total
 
 - [ ] **Step 5: Commit**
@@ -620,7 +624,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ImportError: cannot import name 'provenance'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -655,7 +659,7 @@ def classify(window_marker, pacman_lock, now=None):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 30 tests total
 
 - [ ] **Step 5: Commit**
@@ -728,7 +732,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ImportError: cannot import name 'ledger'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -778,7 +782,7 @@ def read(path):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 35 tests total
 
 - [ ] **Step 5: Commit**
@@ -938,7 +942,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'blackwall_netwatch.daemon'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1036,7 +1040,7 @@ class NetWatch:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 48 tests total
 
 - [ ] **Step 5: Commit**
@@ -1146,7 +1150,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'blackwall_netwatch.server'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1316,7 +1320,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/.config/omarchy/plugins/zds.blackwall && python3 -m unittest discover -s netwatch/tests -t netwatch -v`
+Run: `cd ~/.config/omarchy/plugins/zds.blackwall && PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
 Expected: PASS, 56 tests total
 
 - [ ] **Step 5: Commit**
