@@ -17,8 +17,15 @@ def call(request):
     except OSError as exc:
         sys.exit("netwatch is not running (%s)" % exc)
     with s:
-        s.sendall((json.dumps(request) + "\n").encode("utf-8"))
-        return json.loads(s.recv(65536).decode("utf-8"))
+        try:
+            s.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            raw = s.recv(65536).decode("utf-8")
+        except OSError as exc:
+            sys.exit("netwatch did not answer (%s)" % exc)
+        try:
+            return json.loads(raw)
+        except ValueError:
+            sys.exit("netwatch sent an unreadable reply")
 
 
 def main():

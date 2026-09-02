@@ -58,6 +58,69 @@ def _enforce_quietly(nw):
         return {"changed": False, "verdict": None, "targets": []}
 
 
+MAX_REQUEST_BYTES = 65536
+
+
+def _reply(conn, payload):
+    """Write one reply. A peer that has gone must not take the daemon with it.
+
+    The socket is world-writable by design -- anyone may add a domain -- so a
+    client that connects and vanishes is an ordinary event, not an attack. It
+    has to cost nothing.
+    """
+    try:
+        conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+    except OSError:
+        pass
+
+
+def _read_request(conn):
+    """Read one newline-terminated request, or None if the peer sent nothing.
+
+    Read until the newline rather than trusting a single recv: a request that
+    spans two reads is a valid request, and answering it "malformed" would be
+    our bug, not the client's.
+    """
+    chunks = []
+    total = 0
+    while total < MAX_REQUEST_BYTES:
+        try:
+            chunk = conn.recv(4096)
+        except OSError:
+            return None
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if b"\n" in chunk:
+            break
+    if not chunks:
+        return None
+    return b"".join(chunks)
+
+
+def serve_connection(nw, conn):
+    """Handle one client. Never raises -- nothing a client does may reach the
+    accept loop."""
+    try:
+        conn.settimeout(5)
+        raw = _read_request(conn)
+        if raw is None:
+            return
+        try:
+            request = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            _reply(conn, {"ok": False, "error": "malformed request"})
+            return
+        try:
+            reply = handle(nw, request)
+        except Exception:
+            reply = {"ok": False, "error": "internal error"}
+        _reply(conn, reply)
+    except Exception:
+        pass
+
+
 def serve(nw, interval=30):
     path = nw.paths.socket
     os.makedirs(os.path.dirname(path) or "/", mode=0o755, exist_ok=True)
@@ -79,21 +142,7 @@ def serve(nw, interval=30):
             conn = None
         if conn is not None:
             with conn:
-                conn.settimeout(5)
-                try:
-                    data = conn.recv(65536).decode("utf-8")
-                    request = json.loads(data)
-                except (ValueError, UnicodeDecodeError):
-                    reply = {"ok": False, "error": "malformed request"}
-                except socket.timeout:
-                    reply = None
-                else:
-                    try:
-                        reply = handle(nw, request)
-                    except Exception:
-                        reply = {"ok": False, "error": "internal error"}
-                if reply is not None:
-                    conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
+                serve_connection(nw, conn)
             _enforce_quietly(nw)
             last = time.monotonic()
         elif time.monotonic() - last >= interval:

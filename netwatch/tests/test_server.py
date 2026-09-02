@@ -97,5 +97,61 @@ class TestEnforceBackstop(unittest.TestCase):
         self.assertFalse(result["changed"])
 
 
+class _FakeConn:
+    """Drives serve_connection without a socket: scripted reads, captured writes."""
+
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.sent = b""
+
+    def settimeout(self, seconds):
+        pass
+
+    def recv(self, size):
+        return self.chunks.pop(0) if self.chunks else b""
+
+    def sendall(self, data):
+        self.sent += data
+
+
+class _BrokenConn(_FakeConn):
+    def sendall(self, data):
+        raise BrokenPipeError("peer went away")
+
+
+class TestServeConnection(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        with open(os.path.join(self.dir, "hosts"), "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.nw = NetWatch(paths_in(self.dir), flusher=lambda: None)
+
+    def test_a_peer_that_hangs_up_mid_reply_does_not_raise(self):
+        # The socket is 0666 by design, so connect-then-disconnect is ordinary.
+        # Before this guard it was a two-syscall kill for the whole daemon.
+        server.serve_connection(self.nw, _BrokenConn([b'{"cmd": "status"}\n']))
+
+    def test_a_request_split_across_reads_is_understood(self):
+        conn = _FakeConn([b'{"cmd": "sta', b'tus"}\n'])
+        server.serve_connection(self.nw, conn)
+        self.assertTrue(json.loads(conn.sent.decode("utf-8"))["ok"])
+
+    def test_a_client_that_sends_nothing_gets_no_reply(self):
+        conn = _FakeConn([])
+        server.serve_connection(self.nw, conn)
+        self.assertEqual(conn.sent, b"")
+
+    def test_malformed_json_is_refused_not_fatal(self):
+        conn = _FakeConn([b"{ not json\n"])
+        server.serve_connection(self.nw, conn)
+        self.assertFalse(json.loads(conn.sent.decode("utf-8"))["ok"])
+
+    def test_an_oversized_request_is_bounded(self):
+        flood = [b"x" * 4096] * 40
+        conn = _FakeConn(flood)
+        server.serve_connection(self.nw, conn)
+        self.assertFalse(json.loads(conn.sent.decode("utf-8"))["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
