@@ -10,16 +10,59 @@ so both an explicit hook marker and pacman's own lock are consulted.
 import os
 import time
 
-# A transaction longer than this has crashed or been killed. Trusting the marker
-# forever would leave breach detection silently disabled.
 STALE_AFTER_SECONDS = 30 * 60
 
+PROC_DIR = "/proc"
 
-def classify(window_marker, pacman_lock, now=None):
-    if os.path.exists(pacman_lock):
-        return "drift"
+# pacman holds the lock directly; paru drives libalpm itself and never spawns a
+# pacman child, so it has to be named here in its own right.
+PACKAGE_MANAGERS = ("pacman", "paru", "yay")
+
+
+def _age(path, now):
+    """Seconds since `path` was last written, or None if it is not there.
+
+    ValueError is caught alongside OSError because a path containing an embedded
+    NUL raises the former, and nothing this daemon reads is allowed to raise.
+    """
     try:
-        age = (now if now is not None else time.time()) - os.stat(window_marker).st_mtime
-    except OSError:
-        return "breach"
-    return "drift" if age <= STALE_AFTER_SECONDS else "breach"
+        return now - os.stat(path).st_mtime
+    except (OSError, ValueError):
+        return None
+
+
+def _transaction_alive(proc_dir):
+    """Is a package manager actually running right now?
+
+    pacman's lock file carries no pid, so a lock left behind by a killed
+    transaction is indistinguishable from a live one by inspecting the file. On
+    Arch a stale db.lck is an ordinary condition, and without this check a single
+    `touch` of that path would put the daemon into permanent drift and every hand
+    edit after it would go unrecorded.
+    """
+    try:
+        entries = os.listdir(proc_dir)
+    except (OSError, ValueError):
+        return False
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc_dir, entry, "comm")) as f:
+                if f.read().strip() in PACKAGE_MANAGERS:
+                    return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def classify(window_marker, pacman_lock, now=None, proc_dir=PROC_DIR):
+    now = time.time() if now is None else now
+    lock_age = _age(pacman_lock, now)
+    if lock_age is not None:
+        if lock_age <= STALE_AFTER_SECONDS or _transaction_alive(proc_dir):
+            return "drift"
+    marker_age = _age(window_marker, now)
+    if marker_age is not None and marker_age <= STALE_AFTER_SECONDS:
+        return "drift"
+    return "breach"

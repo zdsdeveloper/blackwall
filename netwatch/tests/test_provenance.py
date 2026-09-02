@@ -18,6 +18,13 @@ class TestClassify(unittest.TestCase):
             past = time.time() - age
             os.utime(path, (past, past))
 
+    def make_proc(self, name, comm):
+        proc = os.path.join(self.dir, name)
+        os.makedirs(os.path.join(proc, "4242"), exist_ok=True)
+        with open(os.path.join(proc, "4242", "comm"), "w") as f:
+            f.write(comm + "\n")
+        return proc
+
     def test_no_signals_is_breach(self):
         self.assertEqual(provenance.classify(self.marker, self.lock), "breach")
 
@@ -40,6 +47,35 @@ class TestClassify(unittest.TestCase):
         self.touch(self.marker, age=provenance.STALE_AFTER_SECONDS + 60)
         self.touch(self.lock)
         self.assertEqual(provenance.classify(self.marker, self.lock), "drift")
+
+    def test_stale_lock_with_no_package_manager_running_is_breach(self):
+        # A killed pacman leaves db.lck behind as a matter of course. Without
+        # this, one touch of that path would buy permanent drift and every hand
+        # edit after it would go unrecorded.
+        self.touch(self.lock, age=provenance.STALE_AFTER_SECONDS + 60)
+        idle = self.make_proc("idle-proc", "bash")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=idle), "breach")
+
+    def test_stale_lock_during_a_long_transaction_is_still_drift(self):
+        # A big -Syu can outrun the staleness bound. Bounding on age alone would
+        # call a real system update tampering.
+        self.touch(self.lock, age=provenance.STALE_AFTER_SECONDS + 60)
+        busy = self.make_proc("busy-proc", "pacman")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=busy), "drift")
+
+    def test_fresh_lock_is_trusted_without_a_process_scan(self):
+        self.touch(self.lock)
+        idle = self.make_proc("idle-proc2", "bash")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=idle), "drift")
+
+    def test_unreadable_proc_is_treated_as_no_transaction(self):
+        self.touch(self.lock, age=provenance.STALE_AFTER_SECONDS + 60)
+        missing = os.path.join(self.dir, "no-such-proc")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=missing), "breach")
 
 
 if __name__ == "__main__":
