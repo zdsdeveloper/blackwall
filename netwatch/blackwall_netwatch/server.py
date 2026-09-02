@@ -148,6 +148,36 @@ def serve_connection(nw, conn):
         pass
 
 
+def _serve_once(nw, server, last, interval):
+    """One turn of the accept loop. Returns the time enforcement last ran.
+
+    Extracted so the loop body can be driven without a real socket, and so
+    there is exactly one place where the periodic check could be skipped --
+    and no path that skips it.
+    """
+    conn = None
+    try:
+        conn, _ = server.accept()
+    except TimeoutError:
+        pass
+    except OSError:
+        # ECONNABORTED, EMFILE and the rest. One lost connection is not a
+        # reason to stop enforcing, so this must fall through to the periodic
+        # check below rather than restarting the loop -- and it pauses, because
+        # an error that does not clear would otherwise spin here at full speed
+        # and starve the very repair it is skipping.
+        time.sleep(0.1)
+    if conn is not None:
+        with conn:
+            serve_connection(nw, conn)
+        _enforce_quietly(nw)
+        return time.monotonic()
+    if time.monotonic() - last >= interval:
+        _enforce_quietly(nw)
+        return time.monotonic()
+    return last
+
+
 def serve(nw, interval=30):
     # Before the socket, deliberately. Enforcement does not depend on the
     # control channel and must not be hostage to it: if makedirs, bind or chmod
@@ -166,20 +196,4 @@ def serve(nw, interval=30):
     server.settimeout(interval)
     last = time.monotonic()
     while True:
-        try:
-            conn, _ = server.accept()
-        except TimeoutError:
-            conn = None
-        except OSError:
-            # ECONNABORTED, EMFILE and the rest: one lost connection is not a
-            # reason to leave the machine unenforced. Only the timeout above is
-            # an ordinary cycle; everything else costs just this iteration.
-            continue
-        if conn is not None:
-            with conn:
-                serve_connection(nw, conn)
-            _enforce_quietly(nw)
-            last = time.monotonic()
-        elif time.monotonic() - last >= interval:
-            _enforce_quietly(nw)
-            last = time.monotonic()
+        last = _serve_once(nw, server, last, interval)

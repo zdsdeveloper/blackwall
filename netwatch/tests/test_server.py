@@ -211,6 +211,80 @@ class TestReadRequestDeadline(unittest.TestCase):
         self.assertLess(conn.recv_calls, 100)
 
 
+class _Sentinel(Exception):
+    """Not an OSError, so it escapes the loop body and bounds the drive."""
+
+
+class _FailingListener:
+    """A listening socket whose accept() always fails."""
+
+    def __init__(self, error, limit):
+        self.error = error
+        self.limit = limit
+        self.accepts = 0
+
+    def accept(self):
+        self.accepts += 1
+        if self.accepts > self.limit:
+            raise _Sentinel()
+        raise self.error
+
+
+class _Counting:
+    """A NetWatch stand-in that counts enforcements."""
+
+    def __init__(self, paths):
+        self.paths = paths
+        self.enforce_failures = 0
+        self.calls = 0
+
+    def enforce(self):
+        self.calls += 1
+        return {"changed": False, "verdict": None, "targets": []}
+
+
+class TestAcceptLoopKeepsEnforcing(unittest.TestCase):
+    """Drives _serve_once rather than serve().
+
+    serve() is an unbounded loop that binds a real socket, and the loop body is
+    the whole of what needs testing here, so it is extracted and driven
+    directly -- no sockets, no sentinel needed inside the daemon itself.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.paths = paths_in(self.dir)
+
+    def _drive(self, listener, nw, iterations):
+        last = time.monotonic()
+        for _ in range(iterations):
+            try:
+                # interval=0: every non-connection turn is due for enforcement,
+                # so "did it reach the periodic branch" needs no waiting.
+                last = server._serve_once(nw, listener, last, 0)
+            except _Sentinel:
+                break
+
+    def test_a_persistent_accept_error_still_reaches_the_periodic_enforce(self):
+        # EMFILE need not clear. Restarting the loop on the error path would
+        # have jumped straight back to accept() and never enforced again -- a
+        # live daemon that has stopped repairing, which is the failure this
+        # whole wave is about.
+        nw = _Counting(self.paths)
+        started = time.monotonic()
+        self._drive(_FailingListener(OSError("EMFILE"), limit=3), nw, 5)
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(nw.calls, 1)
+        # And it paused instead of spinning at full speed through the failures.
+        self.assertGreaterEqual(elapsed, 0.25)
+        self.assertLess(elapsed, 2.0)
+
+    def test_the_timeout_path_still_reaches_the_periodic_enforce(self):
+        nw = _Counting(self.paths)
+        self._drive(_FailingListener(TimeoutError("timed out"), limit=3), nw, 5)
+        self.assertGreaterEqual(nw.calls, 1)
+
+
 class TestServeConnection(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
