@@ -40,11 +40,20 @@ def normalize(raw):
     return d
 
 
-def parse(text):
-    out = set()
+def parse_lines(text):
+    domains = set()
+    rejected = []
     for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
             continue
-        out.add(normalize(line))
-    return sorted(out)
+        try:
+            domains.add(normalize(stripped))
+        except InvalidDomain:
+            rejected.append(stripped)
+    return sorted(domains), rejected
+
+
+def parse(text):
+    domains, _ = parse_lines(text)
+    return domains
