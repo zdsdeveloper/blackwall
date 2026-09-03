@@ -87,7 +87,7 @@ wall was standing.
 | `repair` | Something changed that did not weaken the wall. Fixed, not punished. |
 | `drift` | A package transaction changed a protected file. Repaired in silence. |
 | `breach` | A protection was missing: the wall was made weaker. |
-| `graced` | A breach found on the daemon's first cycle after starting. Recorded and counted like any other, but not put on screen — a daemon coming up in the middle of a package transaction shouldn't challenge you over half-written files. |
+| `graced` | A breach found on the daemon's first cycle after starting. Recorded and counted like any other, but not put on screen — a daemon coming up in the middle of a package transaction shouldn't challenge you over half-written files. A second such start within ten minutes is refused the grace. |
 | `delivered` | A breach was actually shown to a session. |
 | `ack` | A challenge was answered, which clears the count. |
 | `enforce-failed` | A cycle could not complete. If you see these, the wall is not being repaired. |

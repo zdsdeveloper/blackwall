@@ -72,8 +72,14 @@ def needs_delivery(entries):
     """Is there a breach that has never reached a screen?
 
     A breach recorded while nobody was logged in is not a breach the operator
-    has seen, and the ladder must not go on to lock them for a second one they
-    were never warned about.
+    has seen, so it is still owed a delivery once a session appears.
+
+    What that guarantees is one delivery, not a challenge before every lock.
+    Several undelivered breaches collapse into a single delivery and the rung is
+    evaluated when it lands, so two of them with nobody logged in produce a lock
+    with no challenge first. That is the harsher direction, and it is the one
+    the operator chose when they decided a breach they were never shown should
+    still count.
 
     A breach that WAS shown and then dismissed is delivered, and does not come
     back: ignoring rung one is how the operator chooses rung two.

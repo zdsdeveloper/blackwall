@@ -104,7 +104,13 @@ class NetWatch:
         # cannot undo -- a masked unit, above all -- is still there next cycle
         # and the one after, and re-recording it each time would fire the
         # ladder every thirty seconds for as long as it stands.
-        self._last_reasons = None
+        #
+        # Seeded from the ledger rather than starting empty, because this half
+        # of the memory used to die with the process: a daemon restarted while
+        # a masked unit still stood forgot it had already recorded it, filed the
+        # same weakening a second time, and -- since a graced start counts
+        # toward the rung -- turned one act of tampering into a lock.
+        self._last_reasons = self._recorded_reasons()
         # Set by add(), consumed by the next enforce(). An add changes the
         # blocklist, so the enforcement it triggers finds the managed files
         # disagreeing with it -- which is indistinguishable, to the classifier,
@@ -309,14 +315,40 @@ class NetWatch:
                       else None)
         return reason or "the wall was weakened"
 
+    def _recorded_reasons(self):
+        """The reasons on the newest breach or graced start already on record.
+
+        A weakening the ledger already carries is one this instance should treat
+        as standing, exactly as if it had recorded it itself. Without this the
+        memory of it dies with the process, and a restart files the same masked
+        unit a second time.
+        """
+        try:
+            entries = ledger.read(self.paths.ledger)
+        except Exception:
+            return None
+        for entry in reversed(entries):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("kind") not in ("breach", "graced"):
+                continue
+            reasons = entry.get("reasons")
+            return reasons if isinstance(reasons, list) else []
+        return None
+
     def _enforced_before(self, entries=None):
         # The ledger is the record of whether this machine has ever been in a
         # good state. It is append-only and root-owned, so answering this
         # question dishonestly costs more than the answer is worth.
+        #
+        # `graced` belongs here with the rest: it is a real weakening that was
+        # recorded and simply not shown. Leaving it out would let a ledger
+        # holding nothing else read as "never enforced", and the next weakening
+        # would be filed as an install.
         if entries is None:
             entries = ledger.read(self.paths.ledger)
         return any(
-            e.get("kind") in ("init", "applied", "drift", "breach")
+            e.get("kind") in ("init", "applied", "drift", "breach", "graced")
             for e in entries
         )
 

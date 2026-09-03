@@ -483,6 +483,35 @@ class TestWeakeningAndLadder(unittest.TestCase):
         return [e for e in ledger.read(self.paths.ledger)
                 if e.get("kind") == "breach"]
 
+    def weakenings(self):
+        """Everything that counts toward the rung, however it was recorded."""
+        return [e for e in ledger.read(self.paths.ledger)
+                if e.get("kind") in ("breach", "graced")]
+
+    def test_a_standing_weakening_is_not_recorded_twice_across_a_restart(self):
+        # One act of tampering, one count. The memory of what had already been
+        # recorded used to die with the process, so a restart filed the same
+        # masked unit a second time -- and because a graced start counts toward
+        # the rung, that second filing was a twenty-minute lock.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()
+        self.assertEqual(len(self.weakenings()), 1)
+        self.restarted().enforce()
+        self.assertEqual(len(self.weakenings()), 1)
+
+    def test_a_genuinely_new_weakening_after_a_restart_is_recorded(self):
+        # The mirror of the above: seeding from the ledger must not swallow a
+        # real second act of tampering.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()
+        self.assertEqual(len(self.weakenings()), 1)
+        fresh = self.restarted()
+        self.break_hosts()
+        fresh.enforce()
+        self.assertEqual(len(self.weakenings()), 2)
+
     def test_an_unrelated_hosts_edit_is_a_repair_not_a_breach(self):
         self.settle()
         with open(self.paths.hosts, "a") as f:

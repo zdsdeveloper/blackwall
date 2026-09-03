@@ -137,6 +137,15 @@ class TestDelivery(unittest.TestCase):
                    {"kind": "delivered", "at": NOW, "token_hash": "bb"}]
         self.assertEqual(ladder.pending_delivery(entries), "bb")
 
+    def test_a_delivery_after_an_ack_is_pending_again(self):
+        # Restored coverage: the delivery/ack/delivery cycle has to hand back
+        # the NEW hash, or a second challenge could be answered with the token
+        # from the first.
+        entries = [{"kind": "delivered", "at": NOW - 20, "token_hash": "aa"},
+                   {"kind": "ack", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "delivered", "at": NOW, "token_hash": "cc"}]
+        self.assertEqual(ladder.pending_delivery(entries), "cc")
+
     def test_pending_delivery_is_cleared_by_an_ack(self):
         entries = [{"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
                    {"kind": "ack", "at": NOW, "token_hash": "aa"}]
