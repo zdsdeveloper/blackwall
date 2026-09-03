@@ -133,17 +133,21 @@ class NetWatch:
         except (OSError, ValueError):
             return []
 
-    def _append_domain(self, domain):
-        """Write one domain to the blocklist. The one writer, for add() and
-        for a restore -- the file is append-only, so this is the whole of
-        what either of them is allowed to do to it."""
+    def _append_domains(self, domains):
+        """Write one or more domains to the blocklist in one open, one write
+        and one fsync. The one writer, for add() and for a restore -- the
+        file is append-only, so this is the whole of what either of them is
+        allowed to do to it. A restore of a truncated full list is one or
+        more domains landing inside a single cycle on a single-threaded
+        server, and that is one fsync, not one per domain."""
+        text = "".join(domain + "\n" for domain in domains)
         fd = os.open(
             self.paths.blocklist,
             os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC,
             0o644,
         )
         try:
-            os.write(fd, (domain + "\n").encode("utf-8"))
+            os.write(fd, text.encode("utf-8"))
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -155,7 +159,7 @@ class NetWatch:
             if len(current) >= MAX_DOMAINS:
                 raise BlocklistFull(
                     "blocklist is at its %d-domain limit" % MAX_DOMAINS)
-            self._append_domain(domain)
+            self._append_domains([domain])
             ledger.record(self.paths.ledger, "added", domain=domain)
             # The enforcement this causes is our own work, not tampering: the
             # managed files are about to differ from the blocklist because we
@@ -187,10 +191,18 @@ class NetWatch:
             # Appending is permitted on an append-only file, which is what
             # makes deleting a line futile rather than merely detected: it is
             # back within the cycle, and the breach is recorded either way.
-            for domain in restored:
-                self._append_domain(domain)
-            domains = self.domains()
-            targets.append("blocklist")
+            try:
+                self._append_domains(restored)
+            except OSError:
+                # A restore that cannot be written -- ENOSPC, EPERM, a
+                # chattr +i -- must not take the cycle down with it. The
+                # tampering still gets recorded below, the hosts and policy
+                # repairs still run, and the append is retried next cycle.
+                pass
+            after = self.domains()
+            if set(after) != set(domains):
+                domains = after
+                targets.append("blocklist")
         if hosts.apply(self.paths.hosts, domains):
             targets.append("hosts")
             self.flusher()

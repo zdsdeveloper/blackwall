@@ -463,6 +463,52 @@ class TestNetWatch(unittest.TestCase):
         added = [e for e in ledger.read(self.paths.ledger) if e["kind"] == "added"]
         self.assertEqual(len(added), 1)
 
+    def test_a_promised_domain_recorded_under_an_older_normalisation(self):
+        # www-stripping changed from `if` to `while`, so an entry written
+        # before that can name a domain this normalisation would never
+        # produce ("www.www.x.com" now normalises straight to "x.com"). The
+        # restore must satisfy the promise rather than chase an unnormalised
+        # ledger entry every cycle for ever.
+        self.nw.add("a.com")
+        self.nw.enforce()  # init
+        self.nw.enforce()  # quiet
+        ledger.record(self.paths.ledger, "added", domain="www.www.x.com")
+        counts = []
+        for _ in range(3):
+            self.nw.enforce()
+            counts.append(len([e for e in ledger.read(self.paths.ledger)
+                                if e["kind"] == "breach"]))
+        # One entry recorded under an old normalisation is one thing to
+        # reconcile, not a fresh breach every cycle it takes to notice.
+        self.assertEqual(counts[1], counts[2])
+
+    def test_a_restore_that_cannot_be_written_still_records_the_breach(self):
+        # ENOSPC, EPERM or a chattr +i on the blocklist must not take the
+        # whole cycle down with it: the tampering still gets recorded, and
+        # the rest of the pipeline still runs.
+        self.nw.add("a.com")
+        self.nw.enforce()  # init
+        self.nw.enforce()  # quiet
+        os.unlink(self.paths.zen_policy)
+        with open(self.paths.blocklist, "w") as f:
+            f.write("")
+        os.chmod(self.paths.blocklist, 0o444)
+        try:
+            result = self.nw.enforce()
+        finally:
+            os.chmod(self.paths.blocklist, 0o644)
+        self.assertEqual(result["verdict"], "breach")
+        breaches = [e for e in ledger.read(self.paths.ledger)
+                    if e["kind"] == "breach"]
+        self.assertEqual(len(breaches), 1)
+        # The policy repair is independent of the blocklist write and still
+        # ran despite the failed restore.
+        policy = json.load(open(self.paths.zen_policy))["policies"]
+        self.assertEqual(policy["DNSOverHTTPS"], {"Enabled": False, "Locked": True})
+        # hosts.apply ran to completion too, rather than the cycle dying
+        # before it got there.
+        self.assertIn("127.0.0.1 localhost", open(self.paths.hosts).read())
+
     def test_close_window_removes_the_marker(self):
         with open(self.paths.window_marker, "w") as f:
             f.write("")

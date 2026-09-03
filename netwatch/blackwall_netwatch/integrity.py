@@ -9,7 +9,7 @@ else is repaired in silence.
 import json
 import os
 
-from . import hosts
+from . import blocklist, hosts
 
 
 def _read(path):
@@ -108,8 +108,16 @@ def promised_domains(entries):
         if not isinstance(entry, dict) or entry.get("kind") != "added":
             continue
         domain = entry.get("domain")
-        if isinstance(domain, str) and domain:
-            promised.add(domain)
+        if not isinstance(domain, str) or not domain:
+            continue
+        # Normalised on the way out rather than trusted as written. An entry
+        # recorded under an older normalisation can be a domain this one would
+        # never produce, and a promise that cannot be satisfied is a breach
+        # filed every cycle for ever -- a lock inside the first minute.
+        try:
+            promised.add(blocklist.normalize(domain))
+        except blocklist.InvalidDomain:
+            continue
     return promised
 
 

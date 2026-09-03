@@ -141,8 +141,18 @@ class TestWeakened(unittest.TestCase):
             integrity.weakened(self.hosts, ["a.com"], self.policy, self.unit,
                                self.source, ledger_entries=entries), [])
 
-    def test_no_ledger_means_no_blocklist_reason(self):
-        self.assertEqual(self.reasons(), [])
+    def test_the_same_ledger_entry_discriminates_present_from_absent(self):
+        # Replaces a check that only proved the default argument exists and
+        # passed against the pre-fix code either way: the same ledger entry
+        # must produce a reason when its domain is missing from the
+        # blocklist and must not when the domain is there.
+        entries = [{"kind": "added", "domain": "a.com"}]
+        self.assertTrue(any("blocklist" in r for r in
+            integrity.weakened(self.hosts, [], self.policy, self.unit,
+                               self.source, ledger_entries=entries)))
+        self.assertEqual(
+            integrity.weakened(self.hosts, ["a.com"], self.policy, self.unit,
+                               self.source, ledger_entries=entries), [])
 
     def test_a_malformed_added_entry_is_skipped(self):
         entries = ["junk", {"kind": "added"}, {"kind": "added", "domain": 3}]
