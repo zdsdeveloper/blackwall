@@ -138,6 +138,19 @@ check("span: midpoint", Model.phaseSpan(0.75, 0.5, 1), 0.5);
 // to answer rather than divide by zero.
 check("span: degenerate", Model.phaseSpan(0.5, 1, 1), 0);
 
+// ----------------------------------------------------------- the station tail
+
+// The detail column has to carry what the entry is actually about, or the tail
+// is a list of nouns with no subjects.
+const AT = new Date(2026, 0, 2, 3, 4, 5).getTime() / 1000;
+check("tail: an add names the domain", Model.stationLogLine({ kind: "added", at: AT, domain: "x.com" }), "03:04:05  added      x.com");
+check("tail: a breach names the reason", Model.stationLogLine({ kind: "breach", at: AT, reasons: ["unit: masked"], targets: ["hosts"] }), "03:04:05  breach     unit: masked");
+check("tail: a drift names the file", Model.stationLogLine({ kind: "drift", at: AT, targets: ["hosts", "zen_policy"] }), "03:04:05  drift      hosts, zen_policy");
+check("tail: a bare kind stands alone", Model.stationLogLine({ kind: "ack", at: AT }), "03:04:05  ack      ");
+check("tail: a missing timestamp does not crash", Model.stationLogLine({ kind: "ack" }), "--:--:--  ack      ");
+check("tail: a non-entry is empty, not a crash", Model.stationLogLine(null), "");
+check("tail: a string is not an entry", Model.stationLogLine("breach"), "");
+
 // ---------------------------------------------------------------- the ripple
 
 // Every slice samples one shared wave, which is what makes the wall read as a

@@ -7,12 +7,14 @@
   "description": "Timed session lock with no way out. Pick a duration on the bar; the Blackwall holds the session until it expires.",
   "kinds": [
     "bar-widget",
-    "service"
+    "service",
+    "panel"
   ],
   "keepLoaded": true,
   "entryPoints": {
     "barWidget": "BarWidget.qml",
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "panel": "BlackwallPanel.qml"
   },
   "barWidget": {
     "displayName": "Blackwall",

@@ -131,6 +131,37 @@ function parseConfig(raw) {
   }
 }
 
+// ------------------------------------------------------------- the station
+
+// One ledger entry as a line on the station's tail.
+//
+// The detail column carries whatever that kind of entry is actually about --
+// the domain for an add, the reason for a breach, the repaired file for a
+// drift. A log that printed only the kind would be a list of nouns.
+function stationLogLine(entry) {
+  if (!entry || typeof entry !== "object") return ""
+  var kind = String(entry.kind || "?")
+  var at = Number(entry.at)
+  var stamp = "--:--:--"
+  if (isFinite(at) && at > 0) {
+    var d = new Date(at * 1000)
+    stamp = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds())
+  }
+  var detail = ""
+  if (entry.domain) {
+    detail = String(entry.domain)
+  } else if (entry.reasons && entry.reasons.length) {
+    detail = String(entry.reasons[0])
+  } else if (entry.targets && entry.targets.length) {
+    detail = entry.targets.join(", ")
+  }
+  // Padded so the kinds line up into a column. A tail that jitters left and
+  // right is harder to skim than one that does not.
+  var kindCell = kind
+  while (kindCell.length < 9) kindCell += " "
+  return stamp + "  " + kindCell + (detail === "" ? "" : "  " + detail)
+}
+
 // ---------------------------------------------------------------- animation
 
 var TAU = Math.PI * 2
