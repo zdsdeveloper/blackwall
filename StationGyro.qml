@@ -43,7 +43,6 @@ Item {
       anchors.centerIn: parent
       width: root.scaleUnit * ring.modelData.radius * 2
       height: width
-      rotation: ring.modelData.tilt
       opacity: root.power * ring.modelData.alpha
 
       // 0..1 around the ring's own axis.
@@ -63,13 +62,31 @@ Item {
       readonly property real angle: (root.steady ? ring.turn : ring.turn * 0.10) * 2 * Math.PI
       readonly property real squash: Math.cos(ring.angle)
 
-      transform: Scale {
-        origin.x: ring.width / 2
-        origin.y: ring.height / 2
-        // Never quite zero: a ring exactly edge-on disappears for a frame and
-        // the cage blinks.
-        xScale: Math.max(0.04, Math.abs(ring.squash))
-      }
+      // Squash first, then tilt. The order is the whole illusion: squashing a
+      // circle and then turning it gives a ring on its own axis, while
+      // turning it and then squashing gives an ellipse on the screen's axis
+      // -- and a circle's own rotation is invisible, so getting this backwards
+      // collapses all three rings onto one shared axis and there is no cage.
+      //
+      // It has to be one transform list rather than the item's `rotation`
+      // property, because `transform` composes OUTSIDE `rotation`: an item
+      // with `rotation: 90` and a Scale in `transform` maps its right-edge
+      // midpoint to (50,100), where squash-then-tilt puts it at (50,55).
+      // Measured under Quickshell rather than assumed.
+      transform: [
+        Scale {
+          origin.x: ring.width / 2
+          origin.y: ring.height / 2
+          // Never quite zero: a ring exactly edge-on disappears for a frame
+          // and the cage blinks.
+          xScale: Math.max(0.04, Math.abs(ring.squash))
+        },
+        Rotation {
+          origin.x: ring.width / 2
+          origin.y: ring.height / 2
+          angle: ring.modelData.tilt
+        }
+      ]
 
       // The ring itself.
       Rectangle {
