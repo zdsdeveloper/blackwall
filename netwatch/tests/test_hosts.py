@@ -44,6 +44,52 @@ class TestSplice(unittest.TestCase):
         self.assertIn("10.0.0.1 later", updated)
 
 
+class TestExpectedLines(unittest.TestCase):
+    def test_four_lines_per_domain_in_render_order(self):
+        self.assertEqual(hosts.expected_lines(["a.com"]), [
+            "0.0.0.0 a.com", ":: a.com",
+            "0.0.0.0 www.a.com", ":: www.a.com",
+        ])
+
+    def test_render_contains_exactly_the_expected_lines(self):
+        rendered = hosts.render(["a.com", "b.com"])
+        for line in hosts.expected_lines(["a.com", "b.com"]):
+            self.assertIn(line, rendered)
+
+
+class TestRegionLines(unittest.TestCase):
+    def test_returns_only_what_is_inside_the_markers(self):
+        text = hosts.splice(STOCK, hosts.render(["a.com"]))
+        inside = hosts.region_lines(text)
+        self.assertIn("0.0.0.0 a.com", inside)
+        self.assertNotIn("127.0.0.1 localhost", inside)
+
+    def test_absent_region_is_empty_not_an_error(self):
+        self.assertEqual(hosts.region_lines(STOCK), [])
+
+
+class TestSpliceKeepsPosition(unittest.TestCase):
+    def test_an_entry_added_after_the_region_stays_after_it(self):
+        once = hosts.splice(STOCK, hosts.render(["a.com"]))
+        edited = once + "10.0.0.9 later\n"
+        out = hosts.splice(edited, hosts.render(["a.com"]))
+        self.assertLess(out.index(hosts.END), out.index("10.0.0.9 later"))
+
+    def test_an_unrelated_edit_after_the_region_changes_nothing_else(self):
+        once = hosts.splice(STOCK, hosts.render(["a.com"]))
+        edited = once + "10.0.0.9 later\n"
+        self.assertEqual(hosts.splice(edited, hosts.render(["a.com"])), edited)
+
+    def test_still_idempotent(self):
+        once = hosts.splice(STOCK, hosts.render(["a.com"]))
+        self.assertEqual(hosts.splice(once, hosts.render(["a.com"])), once)
+
+    def test_appends_when_absent(self):
+        out = hosts.splice(STOCK, hosts.render(["a.com"]))
+        self.assertIn("127.0.0.1 localhost", out)
+        self.assertIn("0.0.0.0 a.com", out)
+
+
 class TestApply(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

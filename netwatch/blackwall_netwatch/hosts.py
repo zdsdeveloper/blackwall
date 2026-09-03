@@ -18,14 +18,23 @@ SINK4 = "0.0.0.0"
 SINK6 = "::"
 
 
-def render(domains):
-    lines = [BEGIN]
+def expected_lines(domains):
+    """Every line the managed region must contain, in render order.
+
+    The single definition of what "blocked" looks like on disk. The renderer
+    writes these and the integrity check looks for them; if the two ever
+    disagreed, the wall would report itself intact while missing entries.
+    """
+    lines = []
     for d in domains:
         for host in (d, "www." + d):
             lines.append("%s %s" % (SINK4, host))
             lines.append("%s %s" % (SINK6, host))
-    lines.append(END)
-    return "\n".join(lines)
+    return lines
+
+
+def render(domains):
+    return "\n".join([BEGIN] + expected_lines(domains) + [END])
 
 
 def _doomed_lines(lines):
@@ -61,11 +70,40 @@ def strip_region(current):
     return "\n".join(line for i, line in enumerate(lines) if i not in doomed)
 
 
+def region_lines(current):
+    """The lines inside the markers, or empty if there is no complete region."""
+    lines = current.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == BEGIN:
+            start = i
+        elif stripped == END and start is not None:
+            return lines[start + 1:i]
+    return []
+
+
 def splice(current, block):
-    base = strip_region(current).rstrip("\n")
-    if not base:
+    """Replace the managed region in place, leaving everything else where it is.
+
+    In place matters: rebuilding the file with the region at the end moved any
+    line written after it, so an ordinary edit to /etc/hosts produced a diff and
+    read as tampering. The replacement is done line-for-line rather than by
+    rejoining text with a forced blank-line separator, so whatever spacing
+    already surrounded the region -- none, one blank line, whatever the
+    operator left -- comes out unchanged when the region's content hasn't.
+    """
+    lines = current.splitlines()
+    doomed = _doomed_lines(lines)
+    if not doomed:
+        if lines:
+            return "\n".join(lines) + "\n\n" + block + "\n"
         return block + "\n"
-    return base + "\n\n" + block + "\n"
+    at = min(doomed)
+    insert = sum(1 for i in range(at) if i not in doomed)
+    kept = [line for i, line in enumerate(lines) if i not in doomed]
+    new_lines = kept[:insert] + block.split("\n") + kept[insert:]
+    return "\n".join(new_lines) + "\n"
 
 
 def apply(path, domains):
