@@ -1381,6 +1381,186 @@ git commit -m "netwatch: the challenge overlay and the deferred rung"
 
 ---
 
+### Task 9: Delivery, not firing
+
+**Files:**
+- Modify: `netwatch/blackwall_netwatch/ladder.py`, `daemon.py`, `server.py`
+- Test: `netwatch/tests/test_ladder.py`, `test_daemon.py`, `test_server.py`
+
+**Interfaces:**
+- Produces: `ladder.pending_delivery(entries) -> str | None` (the hash awaiting an ack), `ladder.needs_delivery(entries) -> bool`; `NetWatch._deliver_pending()`
+
+**The gap.** `_escalate` fires once, on a newly recorded breach. If no session is
+up at that moment — logged out, shell killed, shell crashed — the call fails and
+nothing is ever shown. The breach still counts, so the *next* weakening lands on
+the lock with no challenge ever offered and nothing to explain it. Killing the
+shell before tampering is therefore a way to skip rung one entirely.
+
+**The fix reframes the rule.** "Fire only on a new breach" becomes "deliver only
+what has not been delivered". Every cycle asks whether there is an
+unacknowledged breach with no successful delivery behind it, and if a session
+exists now, delivers it. A dismissed challenge is already delivered, so it does
+not come back — which is the behaviour the spec wants — while a breach that
+never reached a screen does.
+
+**It also fixes a wart in the token.** Today the token is minted when the breach
+is recorded and held only in memory, so a deferred delivery after a daemon
+restart has no token to send. Minting it at *delivery* time instead removes
+that: the breach entry carries no token, and the `delivered` entry carries the
+hash of the one actually handed over.
+
+- [ ] **Step 1: Write the failing ladder tests**
+
+```python
+class TestDelivery(unittest.TestCase):
+    def test_a_breach_with_no_delivery_needs_one(self):
+        self.assertTrue(ladder.needs_delivery([e("breach", NOW)]))
+
+    def test_a_delivered_breach_does_not_need_another(self):
+        entries = [e("breach", NOW - 10),
+                   {"kind": "delivered", "at": NOW, "token_hash": "aa"}]
+        self.assertFalse(ladder.needs_delivery(entries))
+
+    def test_a_new_breach_after_a_delivery_needs_one(self):
+        entries = [e("breach", NOW - 20),
+                   {"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   e("breach", NOW)]
+        self.assertTrue(ladder.needs_delivery(entries))
+
+    def test_nothing_pending_needs_nothing(self):
+        self.assertFalse(ladder.needs_delivery([]))
+        self.assertFalse(ladder.needs_delivery([e("drift", NOW)]))
+
+    def test_an_acknowledged_breach_needs_nothing(self):
+        entries = [e("breach", NOW - 20),
+                   {"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "ack", "at": NOW, "token_hash": "aa"}]
+        self.assertFalse(ladder.needs_delivery(entries))
+
+    def test_pending_delivery_is_the_latest_undelivered_hash(self):
+        entries = [{"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "delivered", "at": NOW, "token_hash": "bb"}]
+        self.assertEqual(ladder.pending_delivery(entries), "bb")
+
+    def test_pending_delivery_is_cleared_by_an_ack(self):
+        entries = [{"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "ack", "at": NOW, "token_hash": "aa"}]
+        self.assertIsNone(ladder.pending_delivery(entries))
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
+
+- [ ] **Step 3: Implement the two lookups**
+
+```python
+def needs_delivery(entries):
+    """Is there a breach that has never reached a screen?
+
+    A breach recorded while nobody was logged in is not a breach the operator
+    has seen, and the ladder must not go on to lock them for a second one they
+    were never warned about.
+    """
+    pending = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        if kind == "breach":
+            pending = True
+        elif kind in ("delivered", "ack"):
+            pending = False
+    return pending
+
+
+def pending_delivery(entries):
+    """The hash of the delivery still waiting to be acknowledged."""
+    digest = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        if kind == "ack":
+            digest = None
+        elif kind == "delivered":
+            candidate = entry.get("token_hash")
+            digest = candidate if isinstance(candidate, str) and candidate else None
+    return digest
+```
+
+`pending_token_hash` is replaced by `pending_delivery` — update `server.handle`'s
+`ack` branch to use it, and delete the old function and its tests.
+
+- [ ] **Step 4: Deliver every cycle rather than firing once**
+
+In `daemon.py`, `enforce()` stops calling `_escalate` and records the verdict
+with no token. At the end of every cycle, whatever the verdict, it calls:
+
+```python
+    def _deliver_pending(self):
+        """Hand an undelivered breach to the session, if there is one now.
+
+        Delivery rather than firing: a breach recorded with no session up has
+        not been seen, and must still be shown when one appears. A breach that
+        WAS shown and then dismissed is delivered, and does not come back --
+        ignoring rung one is how the operator chooses rung two.
+        """
+        entries = ledger.read(self.paths.ledger)
+        if not ladder.needs_delivery(entries):
+            return
+        token = secrets.token_hex(16)
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        step = ladder.rung(entries)
+        try:
+            if step == ladder.LOCK:
+                landed = self.notifier("lock", [str(ladder.LOCK_SECONDS), token])
+            else:
+                landed = self.notifier("challenge", [self._last_reason(entries), token])
+        except Exception:
+            landed = False
+        if landed:
+            ledger.record(self.paths.ledger, "delivered", token_hash=digest)
+```
+
+with a small helper that reads the newest breach's first reason for the message,
+falling back to `"the wall was weakened"`.
+
+The first-enforcement grace still applies to *recording* a breach; delivery is
+separate and always runs.
+
+- [ ] **Step 5: Test the deferred path end to end**
+
+```python
+    def test_a_breach_with_no_session_is_delivered_when_one_appears(self):
+        # Killing the shell before tampering must not skip rung one.
+        self.settle()
+        self.nw.notifier = lambda m, a=(): False      # nobody logged in
+        self.strip_hosts()
+        self.nw.enforce()
+        self.assertEqual(self.calls, [])
+        self.nw.notifier = self.recorder              # a session appears
+        self.nw.enforce()
+        self.assertEqual(self.calls[-1][0], "challenge")
+
+    def test_a_delivered_breach_is_not_delivered_twice(self):
+        ...
+
+    def test_a_dismissed_challenge_does_not_come_back(self):
+        # Delivered but unacknowledged: the breach stands and the next one locks.
+        ...
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd ~/.config/omarchy/plugins/zds.blackwall
+git add netwatch/blackwall_netwatch netwatch/tests
+git commit -m "netwatch: deliver a breach that never reached a screen"
+```
+
+---
+
 ## What Phase 2a deliberately does not do
 
 - **No delayed removal.** That is Phase 2b: tombstones, the removal journal, and the doubling delay.
