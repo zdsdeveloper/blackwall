@@ -13,7 +13,7 @@ import secrets
 import subprocess
 import time
 
-from . import (blocklist, hosts, integrity, ladder, ledger, provenance,
+from . import (blocklist, hosts, integrity, ladder, ledger, probe, provenance,
                session, zenpolicy)
 
 
@@ -40,6 +40,13 @@ WINDOW_GRACE_SECONDS = 60
 # driving the loop by hand needs a shorter one -- but the default has to live
 # somewhere status() can report it without importing server, so it lives here.
 DEFAULT_INTERVAL_SECONDS = 30
+
+# How often to ask the resolver what these names actually point at, as opposed
+# to what /etc/hosts says they point at. Far slower than the repair loop: the
+# things a probe catches -- an application resolver, a stale cache, nsswitch
+# ordering -- do not appear and vanish between one cycle and the next, and a
+# sweep is the one part of enforcement that can touch the network.
+PROBE_INTERVAL_SECONDS = 300
 
 
 class BlocklistFull(Exception):
@@ -87,11 +94,23 @@ def flush_resolver_cache():
 
 class NetWatch:
     def __init__(self, paths, flusher=flush_resolver_cache,
-                 proc_dir=provenance.PROC_DIR, notifier=session.notify):
+                 proc_dir=provenance.PROC_DIR, notifier=session.notify,
+                 resolver=None):
         self.paths = paths
         self.flusher = flusher
         self.proc_dir = proc_dir
         self.notifier = notifier
+        # Injected so the tests never touch the network. None means the system
+        # resolver, which is the whole point in production: the probe has to
+        # take the same path any other program on this machine would.
+        self.resolver = resolver
+        # Last sweep's answers, and when it ran. Empty until the first sweep,
+        # which is why the readout distinguishes "not yet" from "clear".
+        self._probe = {}
+        self._probe_at = 0.0
+        # What was leaking last time, so a standing leak is reported once
+        # rather than every five minutes for as long as it lasts.
+        self._leaking = set()
         # Half of the grace for the cycle that runs as the daemon comes up. A
         # restart in the middle of a package transaction finds the managed
         # files part-written and used to read that as a pair of hands; in
@@ -185,6 +204,60 @@ class NetWatch:
         return domain
 
     def enforce(self):
+        """One repair cycle, then a resolution sweep if one is due.
+
+        The sweep sits outside the cycle rather than inside it for two
+        reasons: the cycle has two exits and the quiet one is the common one,
+        so anything placed on the busy path would almost never run; and a
+        readout must not be able to change what a repair decided.
+        """
+        result = self._enforce()
+        self.sweep()
+        return result
+
+    def sweep(self, now=None):
+        """Ask the resolver where these names actually point.
+
+        Rate-limited to PROBE_INTERVAL_SECONDS and safe to call every cycle.
+        Returns the current answers, whether or not this call refreshed them.
+
+        A leak found here is deliberately NOT a breach and does not touch the
+        ladder. Tampering is a claim about the files NetWatch owns, and
+        `weakened` already makes that claim from evidence the daemon can
+        verify. A resolver answering with a real address can just as easily be
+        a stale cache, a VPN's nameserver, or an application resolver the
+        policy does not cover -- none of which is someone taking the wall
+        apart, and all of which would, if wired to the ladder, put a
+        twenty-minute lock on the screen for a DNS hiccup. It is recorded and
+        shown, loudly. It does not escalate.
+        """
+        now = time.time() if now is None else now
+        if self._probe_at and now - self._probe_at < PROBE_INTERVAL_SECONDS:
+            return self._probe
+
+        try:
+            domains = self.domains()
+            results = probe.probe_all(domains, resolver=self.resolver)
+        except Exception:
+            # Same standing rule as everything else the daemon reads: a
+            # readout that can take enforcement down is worse than no readout.
+            return self._probe
+
+        self._probe = results
+        self._probe_at = now
+
+        # Recorded on the transition only. A leak that stands for a day is one
+        # line in the ledger, not two hundred and eighty-eight.
+        leaking = set(probe.leaking(results))
+        for domain in sorted(leaking - self._leaking):
+            try:
+                ledger.record(self.paths.ledger, "leak", domain=domain)
+            except OSError:
+                pass
+        self._leaking = leaking
+        return results
+
+    def _enforce(self):
         self._reap_dead_window()
         domains = self.domains()
         # Read once, before `weakened` needs it, and reused below for
@@ -566,4 +639,12 @@ class NetWatch:
             # sealed ledger had been tampered with.
             "ledger_sealed": integrity.append_only(self.paths.ledger),
             "interval_seconds": DEFAULT_INTERVAL_SECONDS,
+            # What the resolver actually says, as opposed to what the file
+            # says. Empty until the first sweep -- which the panel tells apart
+            # from "everything clear" by probe_at being 0.
+            "probe": dict(self._probe),
+            "probe_at": self._probe_at,
+            "probe_interval_seconds": PROBE_INTERVAL_SECONDS,
+            "probe_summary": probe.summarise(self._probe),
+            "leaking": probe.leaking(self._probe),
         }

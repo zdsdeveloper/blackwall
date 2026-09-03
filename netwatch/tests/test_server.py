@@ -3,6 +3,7 @@ import errno
 import hashlib
 import json
 import os
+import socket
 import tempfile
 import time
 import unittest
@@ -45,6 +46,39 @@ def quiet_notifier(method, args=()):
     to the session's IPC, and an escalation out of a test would lock the screen
     of whoever is sitting at the machine running it."""
     return False
+
+
+
+# ---------------------------------------------------------------------------
+# No test in this module may touch the network.
+#
+# NetWatch.enforce() ends in a resolution sweep, and a sweep resolves every
+# blocked domain through the system resolver. That is exactly right in
+# production -- the probe has to take the same path any other program takes --
+# and unacceptable here: it makes the suite depend on DNS, slow and flaky by
+# turns, and chatty to the network about the very domains the operator is
+# blocking.
+#
+# Measured before this guard existed: one run of the suite attempted 71 real
+# lookups. A test that wants to exercise sweeping injects its own resolver.
+# ---------------------------------------------------------------------------
+
+_REAL_GETADDRINFO = None
+
+
+def _refuse(host, *args, **kwargs):
+    raise socket.gaierror(socket.EAI_NONAME, "network disabled in tests")
+
+
+def setUpModule():
+    global _REAL_GETADDRINFO
+    _REAL_GETADDRINFO = socket.getaddrinfo
+    socket.getaddrinfo = _refuse
+
+
+def tearDownModule():
+    if _REAL_GETADDRINFO is not None:
+        socket.getaddrinfo = _REAL_GETADDRINFO
 
 
 class TestHandle(unittest.TestCase):

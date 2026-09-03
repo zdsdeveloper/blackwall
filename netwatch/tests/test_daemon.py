@@ -1,11 +1,12 @@
 import json
 import os
+import socket
 import tempfile
 import time
 import unittest
 from unittest import mock
 from blackwall_netwatch import (daemon, hosts, integrity, ladder, ledger,
-                               provenance, server)
+                               probe, provenance, server)
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
@@ -38,6 +39,39 @@ def paths_in(d):
         with open(path, "w") as f:
             f.write(UNIT)
     return paths
+
+
+
+# ---------------------------------------------------------------------------
+# No test in this module may touch the network.
+#
+# NetWatch.enforce() ends in a resolution sweep, and a sweep resolves every
+# blocked domain through the system resolver. That is exactly right in
+# production -- the probe has to take the same path any other program takes --
+# and unacceptable here: it makes the suite depend on DNS, slow and flaky by
+# turns, and chatty to the network about the very domains the operator is
+# blocking.
+#
+# Measured before this guard existed: one run of the suite attempted 71 real
+# lookups. A test that wants to exercise sweeping injects its own resolver.
+# ---------------------------------------------------------------------------
+
+_REAL_GETADDRINFO = None
+
+
+def _refuse(host, *args, **kwargs):
+    raise socket.gaierror(socket.EAI_NONAME, "network disabled in tests")
+
+
+def setUpModule():
+    global _REAL_GETADDRINFO
+    _REAL_GETADDRINFO = socket.getaddrinfo
+    socket.getaddrinfo = _refuse
+
+
+def tearDownModule():
+    if _REAL_GETADDRINFO is not None:
+        socket.getaddrinfo = _REAL_GETADDRINFO
 
 
 class TestNetWatch(unittest.TestCase):
@@ -1049,3 +1083,138 @@ class TestWeakeningAndLadder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSweep(unittest.TestCase):
+    """Resolution sweeps: what the resolver says, as opposed to what the file says."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.paths = paths_in(self.dir)
+        with open(self.paths.hosts, "w") as f:
+            f.write(STOCK)
+        os.makedirs(os.path.dirname(self.paths.zen_package_policy))
+        with open(self.paths.zen_package_policy, "w") as f:
+            json.dump({"policies": {"DisableAppUpdate": True}}, f)
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc)
+        self.answers = {}
+        self.asked = []
+
+    def resolver(self, host, *args, **kwargs):
+        self.asked.append(host)
+        address = self.answers.get(host, "0.0.0.0")
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+                 (address, 0))]
+
+    def watcher(self):
+        return NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc,
+                        notifier=lambda *a, **k: True, resolver=self.resolver)
+
+    def test_a_sunk_domain_reads_as_sunk(self):
+        nw = self.watcher()
+        nw.add("a.com")
+        self.assertEqual(nw.sweep()["a.com"], probe.SUNK)
+
+    def test_a_domain_answering_with_a_real_address_reads_as_leaking(self):
+        nw = self.watcher()
+        nw.add("a.com")
+        self.answers["a.com"] = "93.184.216.34"
+        self.assertEqual(nw.sweep()["a.com"], probe.LEAKING)
+
+    def test_a_sweep_is_rate_limited(self):
+        # Enforcement runs every 30s and calls sweep every time. Without the
+        # limit this would resolve every blocked domain twice a minute.
+        nw = self.watcher()
+        nw.add("a.com")
+        nw.sweep(now=1000.0)
+        self.asked = []
+        nw.sweep(now=1000.0 + daemon.PROBE_INTERVAL_SECONDS - 1)
+        self.assertEqual(self.asked, [])
+
+    def test_a_sweep_runs_again_once_the_interval_has_passed(self):
+        nw = self.watcher()
+        nw.add("a.com")
+        nw.sweep(now=1000.0)
+        self.asked = []
+        nw.sweep(now=1000.0 + daemon.PROBE_INTERVAL_SECONDS + 1)
+        self.assertEqual(self.asked, ["a.com"])
+
+    def test_a_new_leak_is_recorded_once_not_every_sweep(self):
+        nw = self.watcher()
+        nw.add("a.com")
+        self.answers["a.com"] = "93.184.216.34"
+        for i in range(4):
+            nw.sweep(now=1000.0 + i * (daemon.PROBE_INTERVAL_SECONDS + 1))
+        leaks = [e for e in ledger.read(self.paths.ledger)
+                 if e.get("kind") == "leak"]
+        self.assertEqual(len(leaks), 1)
+        self.assertEqual(leaks[0]["domain"], "a.com")
+
+    def test_a_leak_that_clears_and_returns_is_recorded_again(self):
+        nw = self.watcher()
+        nw.add("a.com")
+        self.answers["a.com"] = "93.184.216.34"
+        nw.sweep(now=1000.0)
+        del self.answers["a.com"]
+        nw.sweep(now=2000.0)
+        self.answers["a.com"] = "93.184.216.34"
+        nw.sweep(now=3000.0)
+        leaks = [e for e in ledger.read(self.paths.ledger)
+                 if e.get("kind") == "leak"]
+        self.assertEqual(len(leaks), 2)
+
+    def test_a_leak_is_not_a_breach_and_never_touches_the_ladder(self):
+        # The load-bearing claim. A resolver answering with a real address can
+        # be a stale cache or a VPN's nameserver; wiring that to the ladder
+        # would put a twenty-minute lock on the screen for a DNS hiccup.
+        nw = self.watcher()
+        nw.add("a.com")
+        self.answers["a.com"] = "93.184.216.34"
+        for i in range(5):
+            nw.sweep(now=1000.0 + i * (daemon.PROBE_INTERVAL_SECONDS + 1))
+        entries = ledger.read(self.paths.ledger)
+        self.assertEqual([e for e in entries if e.get("kind") == "breach"], [])
+        self.assertEqual(ladder.unacknowledged(entries), 0)
+
+    def test_a_resolver_that_fails_does_not_take_enforcement_down(self):
+        def boom(*a, **k):
+            raise RuntimeError("resolver exploded")
+        nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc,
+                      notifier=lambda *a, **k: True, resolver=boom)
+        nw.add("a.com")
+        # The wall still gets repaired even though the readout cannot be taken.
+        result = nw.enforce()
+        self.assertIsNotNone(result)
+        self.assertIn("a.com", nw.domains())
+
+    def test_status_reports_the_sweep(self):
+        nw = self.watcher()
+        nw.add("a.com")
+        nw.add("b.com")
+        self.answers["b.com"] = "93.184.216.34"
+        nw.sweep(now=1000.0)
+        status = nw.status()
+        self.assertEqual(status["probe"]["a.com"], probe.SUNK)
+        self.assertEqual(status["probe"]["b.com"], probe.LEAKING)
+        self.assertEqual(status["leaking"], ["b.com"])
+        self.assertEqual(status["probe_summary"][probe.SUNK], 1)
+        self.assertEqual(status["probe_at"], 1000.0)
+
+    def test_status_before_any_sweep_says_so(self):
+        # "Not yet swept" and "swept, everything clear" must not look alike.
+        nw = self.watcher()
+        status = nw.status()
+        self.assertEqual(status["probe"], {})
+        self.assertEqual(status["probe_at"], 0.0)
+
+    def test_enforce_sweeps_on_the_quiet_path(self):
+        # enforce() has two exits and the quiet one is the common one. A sweep
+        # placed on the busy path would almost never run.
+        nw = self.watcher()
+        nw.add("a.com")
+        nw.enforce()          # the add makes this the busy path
+        nw._probe_at = 0.0    # force the next sweep to be due
+        self.asked = []
+        nw.enforce()          # nothing to repair: the quiet path
+        self.assertEqual(self.asked, ["a.com"])

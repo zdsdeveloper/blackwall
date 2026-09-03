@@ -91,6 +91,10 @@ def main():
             print("unacked  %d" % reply.get("unacknowledged", 0))
             for reason in reply.get("weakened", []):
                 print("WEAK     %s" % reason)
+            # A name the resolver still answers with a real address for. Not a
+            # breach -- see NetWatch.sweep -- but the operator should see it.
+            for domain in reply.get("leaking", []):
+                print("LEAK     %s" % domain)
 
 
 if __name__ == "__main__":

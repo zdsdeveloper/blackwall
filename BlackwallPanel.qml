@@ -52,8 +52,25 @@ Item {
   readonly property bool intact: root.everAnswered && root.weakReasons.length === 0
   readonly property int intervalSeconds: Number(report.interval_seconds || 30)
 
+  // The resolution sweep. `probeAt` of 0 means the daemon has not swept yet,
+  // which the panel must not draw as "everything clear".
+  readonly property var probe: report.probe || ({})
+  readonly property real probeAt: Number(report.probe_at || 0)
+  readonly property real probeInterval: Number(report.probe_interval_seconds || 300)
+  readonly property bool probeSwept: root.probeAt > 0
+  readonly property var probeLeaks: report.leaking || []
+  readonly property int probeSunk:
+    Number((report.probe_summary && report.probe_summary.sunk) || 0)
+
   readonly property string monoFamily: Style.font.family
   readonly property color ink: "#ff2b34"
+
+  // NetWatch's colours, which are not the wall's. The wall is red because it
+  // is the thing being contained; the agency watching it is cold. Used for the
+  // mark and the header chrome only -- everything below the rule is about the
+  // Blackwall and stays in the Blackwall's colour.
+  readonly property color netwatchInk: "#8fd8f2"
+  readonly property color netwatchGlow: "#eaf7ff"
   readonly property color dim: Qt.rgba(1, 1, 1, 0.34)
 
   // ---- the power-on sequence ---------------------------------------------
@@ -81,6 +98,7 @@ Item {
   // when a frame is late.
   property real clock: 0
   property double clockOrigin: 0
+  property real epoch: 0
 
   // One blink shared by every caret on the surface, so they agree with each
   // other the way a single terminal's would.
@@ -90,7 +108,12 @@ Item {
     interval: 33
     repeat: true
     running: window.visible
-    onTriggered: root.clock = (Date.now() - root.clockOrigin) / 1000
+    onTriggered: {
+      root.clock = (Date.now() - root.clockOrigin) / 1000
+      // Wall-clock seconds, for anything counting against a timestamp the
+      // daemon reported rather than against time since the window opened.
+      root.epoch = Date.now() / 1000
+    }
   }
 
   function boot() {
@@ -272,7 +295,11 @@ Item {
         // that was wanted -- something behind everything, not something
         // demanding attention.
         grainScale: 0.72
-        stepRate: 2.5
+        // What the field resamples at. At 2.5 it was visibly stepping, which
+        // next to a surface where everything else moves at 30 reads as a
+        // stutter rather than as slowness. The clock feeding it ticks 30 times
+        // a second, so 15 lands evenly on it.
+        stepRate: 15
         artifacts: 0
       }
 
@@ -298,18 +325,34 @@ Item {
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.right: parent.right
-          height: 30
+          height: 58
 
-          Text {
+          StationWordmark {
             id: brand
             anchors.verticalCenter: parent.verticalCenter
-            text: "NETWATCH  ──  BLACKWALL MONITOR"
+            anchors.left: parent.left
+            width: Math.min(320, parent.width * 0.34)
+            height: 46
+            monoFamily: root.monoFamily
+            clock: root.clock
+            live: root.daemonAnswering
+            topColor: root.netwatchGlow
+            footColor: root.netwatchInk
+            power: root.powerAt(0)
+          }
+
+          Text {
+            anchors.left: brand.right
+            anchors.leftMargin: 16
+            anchors.bottom: brand.bottom
+            anchors.bottomMargin: 2
+            text: "BLACKWALL MONITOR"
             font.family: root.monoFamily
-            font.pixelSize: 13
-            font.bold: true
+            font.pixelSize: 10
             font.letterSpacing: 3
-            color: root.ink
-            opacity: root.powerAt(0)
+            color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
+                           root.netwatchInk.b, 0.55)
+            opacity: root.powerAt(1)
           }
 
           // A carrier between the title and the link state. It is the header's
@@ -321,12 +364,13 @@ Item {
             anchors.leftMargin: 24
             anchors.right: link.left
             anchors.rightMargin: 24
+            anchors.verticalCenterOffset: -12
             height: 16
             flow: "across"
             lanes: 1
             speed: root.daemonAnswering ? 1.6 : 0.15
             power: root.powerAt(1)
-            inkColor: root.ink
+            inkColor: root.netwatchInk
           }
 
           Text {
@@ -338,15 +382,21 @@ Item {
             font.family: root.monoFamily
             font.pixelSize: 11
             font.letterSpacing: 2
-            color: root.daemonAnswering ? root.dim : Qt.rgba(1, 0.72, 0.28, 0.9)
+            color: root.daemonAnswering
+              ? Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
+                        root.netwatchInk.b, 0.62)
+              : Qt.rgba(1, 0.72, 0.28, 0.9)
             opacity: root.powerAt(1)
           }
 
+          // The rule under the header is where NetWatch stops and the wall
+          // begins: cold above it, the wall's red below.
           Rectangle {
             anchors.bottom: parent.bottom
             width: parent.width
             height: 1
-            color: Qt.rgba(1, 0.24, 0.28, 0.25 * root.powerAt(1))
+            color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
+                           root.netwatchInk.b, 0.30 * root.powerAt(1))
           }
         }
 
@@ -497,21 +547,29 @@ Item {
             clock: root.clock
             width: instruments.cell
             height: instruments.height
-            title: "BUS"
-            annotation: root.live.length + "/" + root.domains.length
+            title: "RESOLVER"
+            annotation: root.probeSwept
+              ? root.probeSunk + "/" + root.domains.length + " SUNK"
+              : "NOT SWEPT"
+            alert: root.probeLeaks.length > 0
             font.family: root.monoFamily
             power: root.powerAt(7)
             inkColor: root.ink
 
-            StationConduit {
-
-              clock: root.clock
+            // Not another length of pipe. This one is answering a question
+            // nothing else on the station answers: where do these names
+            // actually resolve to, right now, on this machine.
+            StationBus {
               anchors.fill: parent
-              flow: "across"
-              lanes: 4
-              speed: root.daemonAnswering ? 1.3 : 0.2
+              clock: root.clock
+              epoch: root.epoch
+              domains: root.domains
+              results: root.probe
+              sweptAt: root.probeAt
+              interval: root.probeInterval
               power: root.powerAt(7)
               inkColor: root.ink
+              font.family: root.monoFamily
             }
           }
 
@@ -680,23 +738,6 @@ Item {
               }
             }
 
-            // The panel's own internals, filling what the readings do not.
-            // A framed box with a third of its height empty reads as a
-            // layout that ran out rather than an instrument.
-            StationConduit {
-              clock: root.clock
-              anchors.top: subjectStack.bottom
-              anchors.topMargin: 14
-              anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              visible: height > 30
-              flow: "down"
-              lanes: 3
-              speed: root.daemonAnswering ? 0.8 : 0.15
-              power: root.powerAt(7) * 0.62
-              inkColor: root.ink
-            }
           }
 
           // ------------------------------------------------ CONTAINMENT
