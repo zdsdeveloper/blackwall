@@ -1,4 +1,5 @@
 import QtQuick
+import QtMultimedia
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
@@ -23,6 +24,11 @@ PanelWindow {
   property string phrase: ""
   property string token: ""
   property int armSeconds: 15
+
+  // Empty when no audio file is on disk, which is the whole of the missing-file
+  // handling: no source, no player, no error. Same file the lock uses.
+  property string soundSource: ""
+  readonly property real audioVolume: 0.3
 
   signal answered(string token)
   signal dismissed()
@@ -64,6 +70,31 @@ PanelWindow {
     repeat: true
     running: root.open && root.remaining > 0
     onTriggered: root.remaining = Math.max(0, root.remaining - 1)
+  }
+
+  // Ambience, built only while the challenge is up and only when the file is
+  // there. Tying the loader to `open` starts it with the question and stops it
+  // with the answer, the same way the lock ties its player to the surface.
+  //
+  // Unlike the lock there is no lead to claim: the service is a singleton, so
+  // there is exactly one of these no matter how many monitors are attached.
+  Loader {
+    active: root.open && root.soundSource !== ""
+    sourceComponent: Component {
+      MediaPlayer {
+        id: ambience
+        source: root.soundSource
+        loops: MediaPlayer.Infinite
+        audioOutput: AudioOutput { volume: root.audioVolume }
+
+        Component.onCompleted: ambience.play()
+        Component.onDestruction: ambience.stop()
+
+        onErrorOccurred: function (error, errorString) {
+          console.warn("blackwall challenge ambience failed:", errorString)
+        }
+      }
+    }
   }
 
   // Opaque, and the same static the lock wears. A challenge is the wall

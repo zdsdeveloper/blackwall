@@ -698,6 +698,10 @@ Item {
   ChallengeView {
     id: challengeView
 
+    // The same ambience the lock plays, from the same resolution: an explicit
+    // soundPath, else whatever is in sounds/, else silence.
+    soundSource: root.soundUrl
+
     onAnswered: function (token) {
       challengeView.open = false
       root.acknowledge(token)
