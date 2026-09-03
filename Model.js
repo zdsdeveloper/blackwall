@@ -88,6 +88,24 @@ function parseState(raw) {
 // just a lock with extra steps.
 var DEFAULT_CHALLENGE_PHRASE = "I chose this wall"
 
+// Does what was typed answer the challenge?
+//
+// Case and surrounding whitespace are forgiven deliberately. The friction is
+// meant to come from having to type the sentence at all -- at 2am, while the
+// wall is on the screen -- not from fighting the shift key. Interior spacing is
+// NOT collapsed: the phrase is the operator's own words and they should get
+// back exactly what they wrote.
+//
+// Lives here rather than in the overlay so it can be tested without a compositor.
+function phraseMatches(typed, expected) {
+  var a = String(typed === undefined || typed === null ? "" : typed).trim().toLowerCase()
+  var b = String(expected === undefined || expected === null ? "" : expected).trim().toLowerCase()
+  // An empty expectation can never be answered, so it must never be satisfied
+  // either -- otherwise a config that failed to load would open the challenge
+  // to the empty string.
+  return b !== "" && a === b
+}
+
 function parseConfig(raw) {
   var defaults = {
     persistAcrossReboot: true,

@@ -3,6 +3,7 @@ import QtMultimedia
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
+import "Model.js" as Model
 
 // Rung one of the ladder. The wall was made weaker, and the operator is asked
 // to say so in their own words before anything else happens.
@@ -36,10 +37,8 @@ PanelWindow {
   property int remaining: armSeconds
 
   readonly property bool armed: remaining <= 0
-  // Case and surrounding space are forgiven. The friction is meant to come from
-  // having to type the thing at all, not from fighting the shift key at 2am.
-  readonly property bool matches: root.phrase !== ""
-    && field.text.trim().toLowerCase() === root.phrase.trim().toLowerCase()
+  // The rule lives in Model.js so it can be tested without a compositor.
+  readonly property bool matches: Model.phraseMatches(field.text, root.phrase)
   readonly property bool ready: armed && matches
 
   readonly property string monoFamily: Style.font.family

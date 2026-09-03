@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import "Logo.js" as Logo
 import "Model.js" as Model
