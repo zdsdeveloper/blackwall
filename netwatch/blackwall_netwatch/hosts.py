@@ -70,19 +70,6 @@ def strip_region(current):
     return "\n".join(line for i, line in enumerate(lines) if i not in doomed)
 
 
-def region_lines(current):
-    """The lines inside the markers, or empty if there is no complete region."""
-    lines = current.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == BEGIN:
-            start = i
-        elif stripped == END and start is not None:
-            return lines[start + 1:i]
-    return []
-
-
 def splice(current, block):
     """Replace the managed region in place, leaving everything else where it is.
 
