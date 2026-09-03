@@ -5,6 +5,10 @@ After=local-fs.target
 # state after five rapid failures and leaves it there: the wall down
 # permanently, needing a hand to bring it back. Retry forever instead.
 StartLimitIntervalSec=0
+# Armed. systemd refuses `systemctl stop` and `systemctl restart` for this unit;
+# updates go through the installer, which signals it instead and lets
+# Restart=always bring it back on the new code.
+RefuseManualStop=yes
 
 [Service]
 Type=simple

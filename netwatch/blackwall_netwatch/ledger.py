@@ -19,7 +19,16 @@ def record(path, kind, **fields):
     try:
         # os.open's mode is masked by the ambient umask, so on its own it
         # promises nothing. Set the mode we actually want on the descriptor.
-        os.fchmod(fd, 0o644)
+        #
+        # Tolerated failure, and the reason is not hypothetical: once this file
+        # is made append-only the kernel refuses a mode change on it, and an
+        # unguarded fchmod here would turn arming the wall into breaking it --
+        # every add failing, at exactly the moment the operator has made the
+        # problem hard to undo. The mode is already right by then anyway.
+        try:
+            os.fchmod(fd, 0o644)
+        except OSError:
+            pass
         written = 0
         while written < len(line):
             # A short write would leave a half-line for the next appender to
