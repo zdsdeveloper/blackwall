@@ -88,9 +88,46 @@ class TestWeakened(unittest.TestCase):
         self.assertEqual(
             integrity.weakened(self.hosts, [], self.policy, self.unit, self.source), [])
 
-    def test_an_unreadable_hosts_file_is_a_weakening_not_a_crash(self):
+    def test_a_missing_hosts_file_is_a_weakening_not_a_crash(self):
         os.unlink(self.hosts)
         self.assertTrue(self.reasons())
+
+    def test_a_trailing_newline_difference_is_not_a_weakening(self):
+        # `systemctl edit` and a plain re-save both do this. Locking the screen
+        # for a change that changed nothing is how the tool gets uninstalled.
+        with open(self.unit, "a") as f:
+            f.write("\n\n")
+        self.assertEqual(self.reasons(), [])
+
+    def test_a_dropin_override_is_a_weakening(self):
+        # A drop-in replaces ExecStart without the unit file changing at all.
+        os.makedirs(self.unit + ".d")
+        with open(os.path.join(self.unit + ".d", "override.conf"), "w") as f:
+            f.write("[Service]\nExecStart=/bin/true\n")
+        self.assertTrue(any("unit" in r for r in self.reasons()))
+
+    def test_an_empty_dropin_directory_is_not_a_weakening(self):
+        os.makedirs(self.unit + ".d")
+        self.assertEqual(self.reasons(), [])
+
+    def test_a_non_conf_file_in_the_dropin_directory_is_ignored(self):
+        os.makedirs(self.unit + ".d")
+        with open(os.path.join(self.unit + ".d", "notes.txt"), "w") as f:
+            f.write("scratch\n")
+        self.assertEqual(self.reasons(), [])
+
+    def test_an_extra_key_beside_the_doh_fields_is_not_a_weakening(self):
+        # A future Zen adding a field must not read as DoH being unlocked.
+        with open(self.policy, "w") as f:
+            json.dump({"policies": {"DNSOverHTTPS": {
+                "Enabled": False, "Locked": True, "SomethingNew": 1}}}, f)
+        self.assertEqual(self.reasons(), [])
+
+    def test_doh_enabled_with_an_extra_key_is_still_a_weakening(self):
+        with open(self.policy, "w") as f:
+            json.dump({"policies": {"DNSOverHTTPS": {
+                "Enabled": True, "Locked": True, "SomethingNew": 1}}}, f)
+        self.assertTrue(any("DNS" in r or "DoH" in r for r in self.reasons()))
 
 
 if __name__ == "__main__":

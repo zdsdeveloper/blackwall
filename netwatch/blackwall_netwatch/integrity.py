@@ -16,7 +16,7 @@ def _read(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -50,14 +50,34 @@ def doh_locked(policy_path):
     policies = data.get("policies")
     if not isinstance(policies, dict):
         return False
-    return policies.get("DNSOverHTTPS") == {"Enabled": False, "Locked": True}
+    doh = policies.get("DNSOverHTTPS")
+    if not isinstance(doh, dict):
+        return False
+    # The two fields we care about, not the whole object. A future Zen adding a
+    # third key inside DNSOverHTTPS would fail an equality check even with DoH
+    # still locked off -- and that is a screen lock for a browser update.
+    return doh.get("Enabled") is False and doh.get("Locked") is True
+
+
+def _has_dropins(unit_path):
+    """Is there a drop-in beside this unit?
+
+    A file in <unit>.d/ overrides directives without the unit itself changing by
+    a single byte, which makes it the quiet way to repoint a service. We install
+    none, so any that exists is one we did not put there.
+    """
+    try:
+        names = os.listdir(unit_path + ".d")
+    except (OSError, ValueError):
+        return False
+    return any(name.endswith(".conf") for name in names)
 
 
 def unit_intact(unit_path, source_path):
-    """Is the installed unit present, unmasked, and what we installed?
+    """Is the installed unit present, unmasked, unmodified and unoverridden?
 
-    Masking is the quiet way to take the daemon down: the unit becomes a symlink
-    to /dev/null and systemd simply never starts it again.
+    Masking is the quiet way to stop the daemon: the unit becomes a symlink to
+    /dev/null and systemd never starts it again.
     """
     source = _read(source_path)
     if source is None:
@@ -68,7 +88,12 @@ def unit_intact(unit_path, source_path):
     text = _read(unit_path)
     if text is None:
         return False
-    return text == source
+    # Trailing newlines only. A re-save or `systemctl edit` can add or drop the
+    # final newline without changing a directive, and locking someone out over
+    # that would be the tool punishing a no-op. Nothing can hide in it.
+    if text.rstrip("\n") != source.rstrip("\n"):
+        return False
+    return not _has_dropins(unit_path)
 
 
 def weakened(hosts_path, domains, policy_path, unit_path, unit_source):
