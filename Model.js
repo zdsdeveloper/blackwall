@@ -83,8 +83,17 @@ function parseState(raw) {
 
 // User config: { version, persistAcrossReboot }. Anything unreadable defaults
 // to persisting, which matches the behaviour the plugin shipped with.
+// What a breach challenge asks to be typed when the config does not say. There
+// is always a phrase, and it is never empty: a challenge nobody can answer is
+// just a lock with extra steps.
+var DEFAULT_CHALLENGE_PHRASE = "I chose this wall"
+
 function parseConfig(raw) {
-  var defaults = { persistAcrossReboot: true, soundPath: "" }
+  var defaults = {
+    persistAcrossReboot: true,
+    soundPath: "",
+    challengePhrase: DEFAULT_CHALLENGE_PHRASE
+  }
   var text = String(raw || "").trim()
   if (text === "") return defaults
 
@@ -94,7 +103,10 @@ function parseConfig(raw) {
     return {
       persistAcrossReboot: parsed.persistAcrossReboot !== false,
       // Empty means "look in sounds/". An explicit path wins over it.
-      soundPath: String(parsed.soundPath || "")
+      soundPath: String(parsed.soundPath || ""),
+      // Falls back rather than ever landing empty, for the same reason.
+      challengePhrase: String(parsed.challengePhrase || "").trim()
+        || DEFAULT_CHALLENGE_PHRASE
     }
   } catch (e) {
     return defaults

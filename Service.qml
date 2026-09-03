@@ -87,6 +87,11 @@ Item {
   property bool persistAcrossReboot: true
   property bool configLoaded: false
 
+  // What a breach challenge asks to be typed. Owned by the same config file,
+  // read here and never by the daemon: the daemon says only that a challenge is
+  // due, never what it should say.
+  property string challengePhrase: Model.DEFAULT_CHALLENGE_PHRASE
+
   // Cleared when the config path turns out to be something we refuse to touch,
   // which also stops us writing to it.
   property bool configWritable: true
@@ -446,6 +451,7 @@ Item {
     var parsed = Model.parseConfig(raw)
     root.persistAcrossReboot = parsed.persistAcrossReboot
     root.configuredSoundPath = parsed.soundPath
+    root.challengePhrase = parsed.challengePhrase
     root.configLoaded = true
     root.maybeResume()
     root.refreshSound()
@@ -465,7 +471,8 @@ Item {
     configFile.write(JSON.stringify({
       version: 1,
       persistAcrossReboot: root.persistAcrossReboot,
-      soundPath: root.configuredSoundPath
+      soundPath: root.configuredSoundPath,
+      challengePhrase: root.challengePhrase
     }, null, 2) + "\n")
   }
 
@@ -644,6 +651,71 @@ Item {
         return "usage: blackwall setPersist <true|false>"
       return (root.setPersistAcrossReboot(text === "true") ? "true" : "false")
              + root.notPersistedSuffix()
+    }
+
+    // Rung one. The daemon has recorded a breach and is asking for it to be
+    // answered. The token proves the call came from the daemon rather than from
+    // anything else that can reach its socket, and it is handed straight back
+    // with the answer.
+    function challenge(reason: string, token: string): string {
+      var text = String(token || "").trim()
+      if (text === "") return "usage: blackwall challenge <reason> <token>"
+      root.showChallenge(String(reason || "the wall was weakened"), text)
+      return "challenge shown"
+    }
+
+    // Rung two. Engage the wall for a breach that has already had its question
+    // asked, or that arrived past the point of asking.
+    function lock(seconds: string, token: string): string {
+      var value = Number(String(seconds || "").trim())
+      if (!isFinite(value) || value <= 0)
+        return "usage: blackwall lock <seconds> <token>"
+      challengeView.open = false
+      return root.engage(value) ? "locked" : "already engaged"
+    }
+  }
+
+  // --------------------------------------------------------------- the ladder
+
+  function showChallenge(reason, token) {
+    challengeView.reason = String(reason || "")
+    challengeView.phrase = root.challengePhrase
+    challengeView.token = String(token || "")
+    challengeView.open = true
+    logEvent("challenge: " + reason)
+  }
+
+  // Answering is the only thing that clears the count. Dismissing is not, and
+  // that is deliberate: the breach stays standing, so the next weakening is the
+  // second inside the window and lands on the lock instead of another question.
+  function acknowledge(token) {
+    var text = String(token || "").trim()
+    if (text === "") return
+    ackProc.command = ["netwatchctl", "ack", text]
+    ackProc.running = true
+  }
+
+  ChallengeView {
+    id: challengeView
+
+    onAnswered: function (token) {
+      challengeView.open = false
+      root.acknowledge(token)
+      logEvent("challenge answered")
+    }
+
+    onDismissed: {
+      challengeView.open = false
+      logEvent("challenge dismissed, breach still standing")
+    }
+  }
+
+  Process {
+    id: ackProc
+    stderr: StdioCollector { id: ackErr; waitForEnd: true }
+    onExited: function (code, status) {
+      if (code !== 0)
+        root.logEvent("ack refused: " + (String(ackErr.text || "").trim() || code))
     }
   }
 

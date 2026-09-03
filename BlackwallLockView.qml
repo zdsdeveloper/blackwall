@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtMultimedia
 import qs.Commons
-import "Logo.js" as Logo
 import "Model.js" as Model
 
 // The face of the Blackwall. Painted onto the ext-session-lock surface, one
@@ -61,98 +60,19 @@ Item {
   readonly property real audioVolume: 0.3
 
   readonly property string monoFamily: Style.font.family
-  readonly property int rows: Logo.rowCount()
 
-  // One slice per character row. Slicing finer than the grid puts the shear
-  // line through the middle of the glyphs and shreds the block art; on the
-  // row boundaries the seams are already there in the source.
-  readonly property int sliceCount: rows
+  // The wall's own breath, read back from the component that owns it. The
+  // surfaces around it — the static behind, the countdown under — swell with
+  // the logo rather than against it.
+  readonly property real breath: wall.breath
 
-  property real phase: 0
-  property real breath: 0
-
-  // How far a slice may slide sideways, as a fraction of the font size. The
-  // block art only survives a displacement well under one character cell —
-  // past that the rows shear apart and the shading detail turns to mush.
-  property real rippleStrength: 0.14
-  readonly property real rippleAmplitude: Math.max(1, logoFontSize * rippleStrength) * rippleBoost
   readonly property real elapsedFraction: totalMs > 0
     ? Model.clamp(1 - remainingMs / totalMs, 0, 1)
     : 0
 
-  // --- sizing --------------------------------------------------------------
-  //
-  // Measure the widest row at a reference size and scale from there, so the
-  // wall fills the screen at a real font size instead of being drawn small
-  // and scaled up into mush.
-  TextMetrics {
-    id: probe
-    font.family: root.monoFamily
-    font.pixelSize: 64
-    text: Logo.longestLine()
-  }
-
-  // Line advance as a fraction of the font size, taken from the font itself
-  // rather than assumed. Getting this wrong is what collapses the wall: too
-  // tight and the half-block rows overlap into a solid slab.
-  readonly property real lineRatio: probe.height > 0 ? probe.height / 64 : 1.3
-
-  readonly property int logoFontSize: {
-    if (probe.width <= 0 || width <= 0 || height <= 0) return 12
-    var byWidth = 64 * (width * 0.84) / probe.width
-    var byHeight = (height * 0.46) / (root.rows * lineRatio)
-    return Math.max(4, Math.floor(Math.min(byWidth, byHeight)))
-  }
-
-  // The wall's true painted size at the chosen font size. Slice geometry is
-  // derived from this so the bands line up with the character rows.
-  Text {
-    id: metrics
-    visible: false
-    text: Logo.TEXT
-    font.family: root.monoFamily
-    font.pixelSize: root.logoFontSize
-  }
-
-  readonly property real wallWidth: metrics.contentWidth
-  readonly property real wallHeight: metrics.contentHeight
-  readonly property real cellHeight: root.rows > 0 ? wallHeight / root.rows : 0
-
-  function sliceColor(index) {
-    var t = Model.intensityAt(index, root.sliceCount, root.phase, root.breath)
-    var r = 0.07 + 0.93 * t
-    var g = 0.008 + 0.17 * t
-    var b = 0.02 + 0.20 * t
-    // Bleaching pulls the green and blue up toward the red, so the wall goes
-    // from red to white-hot as it thins rather than simply getting brighter.
-    var w = root.bleach
-    if (w > 0) {
-      // Ripple structure survives as luminance; the hue goes incandescent
-      // rather than simply desaturating into grey.
-      var hot = 0.45 + 0.55 * t
-      r = r + (Math.min(1, hot * 1.08) - r) * w
-      g = g + (hot * 0.88 - g) * w
-      b = b + (hot * 0.86 - b) * w
-    }
-    return Qt.rgba(r, g, b, 1)
-  }
-
-  // --- animation drivers ---------------------------------------------------
-
-  NumberAnimation on phase {
-    running: root.active
-    from: 0
-    to: Model.TAU
-    duration: 2600
-    loops: Animation.Infinite
-  }
-
-  SequentialAnimation on breath {
-    running: root.active
-    loops: Animation.Infinite
-    NumberAnimation { from: 0; to: 1; duration: 1900; easing.type: Easing.InOutSine }
-    NumberAnimation { from: 1; to: 0; duration: 2500; easing.type: Easing.InOutSine }
-  }
+  // Sizing, slice colouring and the ripple drivers all belong to BlackwallWall
+  // now — the breach challenge puts up the same wall, and a change to how it
+  // moves should not have to be made twice and land in one place.
 
   // --- surface -------------------------------------------------------------
 
@@ -230,70 +150,22 @@ Item {
     spacing: Math.round(root.height * 0.045)
 
     // ---------------------------------------------------------- the wall
-    Item {
+    //
+    // The same component the breach challenge puts up. The release sequence is
+    // handed over as plain numbers rather than understood in there, so a
+    // surface that never opens the wall gets the neutral defaults.
+    BlackwallWall {
       id: wall
-      width: root.wallWidth
-      height: root.wallHeight
       anchors.horizontalCenter: parent.horizontalCenter
-      scale: 1 + 0.016 * root.breath
-      transformOrigin: Item.Center
-
-      // Bloom. No blur filter is available here, so two oversized, very dim
-      // copies stand in for the halo — the breath drives both.
-      Repeater {
-        model: [
-          { scale: 1.010, alpha: 0.22 },
-          { scale: 1.038, alpha: 0.11 }
-        ]
-
-        delegate: Text {
-          required property var modelData
-          anchors.centerIn: parent
-          horizontalAlignment: Text.AlignLeft
-          text: Logo.TEXT
-          font.family: root.monoFamily
-          font.pixelSize: root.logoFontSize
-          color: "#ff2b34"
-          scale: modelData.scale
-          opacity: modelData.alpha * (0.35 + 0.65 * root.breath)
-            * (1 - root.shatterSpan)
-        }
-      }
-
-      // The rippling wall itself.
-      Repeater {
-        model: root.sliceCount
-
-        delegate: Item {
-          id: slice
-          required property int index
-
-          readonly property int sliceTop: Math.round(index * wall.height / root.sliceCount)
-          readonly property int sliceBottom: Math.round((index + 1) * wall.height / root.sliceCount)
-
-          x: 0
-          y: sliceTop
-          width: wall.width
-          height: sliceBottom - sliceTop
-          // Clipping has to stop once the rows start flying, or each row
-          // would be sliced off at its own band and the break would read as
-          // a wipe instead of the wall coming apart.
-          clip: root.shatterSpan <= 0
-          opacity: root.releasing ? Model.shatterFade(slice.index, root.releaseProgress) : 1
-
-          Text {
-            x: Model.offsetAt(slice.index, root.sliceCount, root.phase, root.rippleAmplitude, root.breath)
-              + (root.releasing ? Model.shatterOffset(slice.index, root.releaseProgress, wall.width) : 0)
-            y: -slice.sliceTop
-              + (root.releasing ? Model.shatterDrift(slice.index, root.sliceCount, root.releaseProgress, wall.height) : 0)
-            width: wall.width
-            text: Logo.TEXT
-            font.family: root.monoFamily
-            font.pixelSize: root.logoFontSize
-            color: root.sliceColor(slice.index)
-          }
-        }
-      }
+      active: root.active
+      monoFamily: root.monoFamily
+      availableWidth: root.width
+      availableHeight: root.height
+      releasing: root.releasing
+      releaseProgress: root.releaseProgress
+      rippleBoost: root.rippleBoost
+      bleach: root.bleach
+      shatterSpan: root.shatterSpan
     }
 
     // ----------------------------------------- the countdown / the readout
