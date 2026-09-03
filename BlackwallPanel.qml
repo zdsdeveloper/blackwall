@@ -298,8 +298,10 @@ Item {
         // What the field resamples at. At 2.5 it was visibly stepping, which
         // next to a surface where everything else moves at 30 reads as a
         // stutter rather than as slowness. The clock feeding it ticks 30 times
-        // a second, so 15 lands evenly on it.
-        stepRate: 15
+        // a second, so 30 is the most it can carry and costs nothing extra:
+        // the field is re-rendered on every repaint either way, and the step
+        // rate only decides how often the noise underneath is resampled.
+        stepRate: 30
         artifacts: 0
       }
 
