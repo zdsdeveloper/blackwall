@@ -595,16 +595,30 @@ class TestAck(unittest.TestCase):
         handle(self.nw, {"cmd": "ack", "token": "aaa"})
         self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
 
-    def test_spamming_ack_cannot_hold_the_ladder_down(self):
-        # The bypass this task exists to close: a shell loop with no token.
-        for _ in range(20):
-            handle(self.nw, {"cmd": "ack"})
+    def test_spamming_ack_between_breaches_cannot_hold_the_ladder_down(self):
+        # The real bypass shape: an ack landing between two breaches clears
+        # the count, so the second reads as the first and the lock is never
+        # reached. Untokened acks must not do that.
         ledger.record(self.paths.ledger, "breach", targets=["hosts"],
                       token_hash=_token_hash("aaa"))
+        for _ in range(20):
+            handle(self.nw, {"cmd": "ack"})
         ledger.record(self.paths.ledger, "breach", targets=["hosts"],
                       token_hash=_token_hash("bbb"))
         entries = ledger.read(self.paths.ledger)
         self.assertEqual(ladder.rung(entries), ladder.LOCK)
+
+    def test_an_answered_challenge_between_breaches_does_drop_the_rung(self):
+        # The mirror: a genuine ack, with the token the daemon issued, is
+        # exactly what the operator earns by answering. It must still work.
+        token = "correct horse"
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
+                      token_hash=_token_hash(token))
+        self.assertTrue(handle(self.nw, {"cmd": "ack", "token": token})["ok"])
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
+                      token_hash=_token_hash("bbb"))
+        entries = ledger.read(self.paths.ledger)
+        self.assertEqual(ladder.rung(entries), ladder.CHALLENGE)
 
     def test_the_raw_token_never_reaches_the_ledger(self):
         # The bypass this fix closes: the ledger is world-readable, so
