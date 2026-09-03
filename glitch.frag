@@ -23,6 +23,13 @@ layout(std140, binding = 0) uniform buf {
     float intensity;
     float aspect;
     float scanScale;
+    // Appended, all scalar floats, all defaulting to the lock surface's
+    // original behaviour so that surface is unchanged by their existence.
+    // The station wants the same field much finer and much slower: sand
+    // rather than snow, drifting rather than snapping.
+    float grainScale;
+    float stepRate;
+    float artifacts;
 };
 
 float hash21(vec2 p) {
@@ -36,25 +43,26 @@ void main() {
 
     // Two clocks: `frame` drives the static and blocks, `slow` holds a tear
     // in place long enough to register before it moves.
-    float frame = floor(time * 18.0);
-    float slow  = floor(time * 3.0);
+    float frame = floor(time * stepRate);
+    float slow  = floor(time * stepRate * 0.1667);
 
     // --- horizontal tear -----------------------------------------------
     // A couple of bands per slice slip sideways, the way a bad feed does.
     float bandRow    = floor(uv.y * 28.0);
     float bandSeed   = hash21(vec2(bandRow, slow));
-    float tearing    = step(0.93, bandSeed);
+    float tearing    = step(0.93, bandSeed) * artifacts;
     float tearAmount = (hash21(vec2(bandRow, slow + 7.0)) - 0.5) * 0.08 * tearing;
     vec2  tuv        = vec2(uv.x + tearAmount, uv.y);
 
     // --- fine static ------------------------------------------------------
-    float grain       = hash21(floor(vec2(tuv.x * 620.0 * aspect, tuv.y * 350.0)) + frame);
+    float grain       = hash21(floor(vec2(tuv.x * 620.0 * grainScale * aspect,
+                                          tuv.y * 350.0 * grainScale)) + frame);
     float staticField = smoothstep(0.72, 1.0, grain);
 
     // --- block artifacts --------------------------------------------------
     vec2  cellId   = floor(vec2(tuv.x * 18.0, tuv.y * 34.0));
-    float block    = step(0.982, hash21(cellId + frame * 0.37));
-    float blockHot = step(0.9965, hash21(cellId + frame * 0.91));
+    float block    = step(0.982, hash21(cellId + frame * 0.37)) * artifacts;
+    float blockHot = step(0.9965, hash21(cellId + frame * 0.91)) * artifacts;
 
     // --- scanlines --------------------------------------------------------
     // Tied to pixel height so the line pitch stays ~2px on any output rather

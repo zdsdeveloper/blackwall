@@ -59,9 +59,10 @@ Panel {
 
   // Presets, the Custom row, and the persistence toggle share one cursor
   // index space: 0..n-1 presets, then Custom, then the toggle.
-  readonly property int menuItemCount: presets.length + 2
+  readonly property int menuItemCount: presets.length + 3
   readonly property int customIndex: presets.length
   readonly property int persistIndex: presets.length + 1
+  readonly property int stationIndex: presets.length + 2
 
   readonly property bool persistAcrossReboot: service ? service.persistAcrossReboot === true : true
 
@@ -71,6 +72,19 @@ Panel {
     else
       Quickshell.execDetached(["omarchy-shell", "blackwall", "setPersist",
                                root.persistAcrossReboot ? "false" : "true"])
+  }
+
+  // The station is a panel entry point on this same plugin, so the shell can
+  // summon it directly. The detached command is the fallback for a bar that
+  // was handed no shell reference -- the same shape every other action here
+  // uses, and for the same reason.
+  function openStation() {
+    root.close()
+    if (root.bar && root.bar.shell && typeof root.bar.shell.summon === "function")
+      root.bar.shell.summon("zds.blackwall", "{}")
+    else
+      Quickshell.execDetached(["omarchy-shell", "shell", "summon",
+                               "zds.blackwall", "{}"])
   }
 
   function moveCursor(delta) {
@@ -86,6 +100,7 @@ Panel {
     if (cursorIndex < presets.length) request(presets[cursorIndex])
     else if (cursorIndex === customIndex) enterCustomStage()
     else if (cursorIndex === persistIndex) togglePersist()
+    else if (cursorIndex === stationIndex) openStation()
   }
 
   // Everything routes through here so the long-lock warning cannot be
@@ -242,6 +257,20 @@ Panel {
             fontFamily: root.bar.fontFamily
             onClicked: root.togglePersist()
             onHovered: function(on) { if (on) root.cursorIndex = root.persistIndex }
+          }
+
+          PanelSeparator { foreground: root.barForeground }
+
+          Button {
+            width: parent.width
+            text: "NetWatch Station…"
+            fontSize: Style.font.bodySmall
+            foreground: root.barForeground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            hasCursor: root.cursorIndex === root.stationIndex
+            onClicked: root.openStation()
+            onHovered: function(on) { if (on) root.cursorIndex = root.stationIndex }
           }
         }
 

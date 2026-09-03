@@ -201,7 +201,7 @@ Item {
     id: window
     title: "NetWatch — Blackwall Monitor"
     implicitWidth: 940
-    implicitHeight: 620
+    implicitHeight: 700
     color: "#050102"
 
     onVisibleChanged: if (!visible) root.requestClose()
@@ -210,10 +210,16 @@ Item {
       anchors.fill: parent
 
       // The static, behind everything, breathing with the wall.
+      // Sand, not snow. The lock wants a field that snaps and tears because
+      // it is a wall coming down; a station someone reads for minutes at a
+      // time wants something that drifts and never asks to be looked at.
       GlitchBackground {
         anchors.fill: parent
         running: window.visible
-        intensity: (0.16 + 0.14 * wall.breath) * root.powerAt(0)
+        intensity: (0.20 + 0.10 * wall.breath) * root.powerAt(0)
+        grainScale: 2.6
+        stepRate: 2.5
+        artifacts: 0
       }
 
       // The perimeter trace. Decorative, and the clearest signal from across
@@ -268,10 +274,44 @@ Item {
           }
         }
 
+        // ---- the wall itself ----------------------------------------------
+        //
+        // The centrepiece, not an item in a column. Everything else on the
+        // station is a readout about this; putting it in the corner said the
+        // opposite.
+        Item {
+          id: hero
+          anchors.top: header.bottom
+          anchors.topMargin: 10
+          anchors.left: parent.left
+          anchors.right: parent.right
+          height: 186
+
+          StationGyro {
+            anchors.centerIn: parent
+            scaleUnit: hero.height * 1.02
+            steady: root.daemonAnswering
+            power: root.powerAt(3) * 0.7
+            inkColor: root.ink
+          }
+
+          BlackwallWall {
+            id: wall
+            anchors.centerIn: parent
+            active: window.visible
+            monoFamily: root.monoFamily
+            availableWidth: hero.width
+            availableHeight: hero.height
+            heightFraction: 0.52
+            widthFraction: 0.34
+            opacity: root.powerAt(4)
+          }
+        }
+
         // ---- the three columns --------------------------------------------
         Row {
-          anchors.top: header.bottom
-          anchors.topMargin: 18
+          anchors.top: hero.bottom
+          anchors.topMargin: 16
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: tail.top
@@ -291,30 +331,6 @@ Item {
               font.letterSpacing: 3
               color: root.dim
               opacity: root.powerAt(2)
-            }
-
-            Item {
-              width: parent.width
-              height: Math.round(parent.height * 0.34)
-
-              StationRotor {
-                anchors.centerIn: parent
-                scaleUnit: Math.min(parent.width, parent.height) * 1.05
-                steady: root.daemonAnswering
-                power: root.powerAt(3) * 0.5
-              }
-
-              BlackwallWall {
-                id: wall
-                anchors.centerIn: parent
-                active: window.visible
-                monoFamily: root.monoFamily
-                availableWidth: parent.width
-                availableHeight: parent.height
-                heightFraction: 0.62
-                widthFraction: 0.80
-                opacity: root.powerAt(4)
-              }
             }
 
             StationLamp {

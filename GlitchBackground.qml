@@ -23,6 +23,17 @@ ShaderEffect {
 
   property bool running: true
 
+  // The field's texture, exposed so one shader can serve two surfaces. The
+  // defaults reproduce the lock exactly; the station asks for something much
+  // finer and slower, and turns the loud half off.
+  //
+  //   grainScale  higher is finer -- sand rather than snow
+  //   stepRate    how often the noise resamples; lower drifts, higher snaps
+  //   artifacts   the tears and red blocks, 0 removes them entirely
+  property real grainScale: 1.0
+  property real stepRate: 18.0
+  property real artifacts: 1.0
+
   readonly property real aspect: height > 0 ? width / height : 1.0
   readonly property real scanScale: Math.max(1.0, height)
 
