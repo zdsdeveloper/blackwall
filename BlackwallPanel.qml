@@ -71,6 +71,16 @@ Item {
   }
 
   function powerAt(slot) {
+    // A station nobody is looking at draws no power. Every animation on the
+    // surface is gated on its slot's power, so this one line stops all of
+    // them when the window closes -- without it the gyro, the perimeter
+    // trace and the lamp halos keep running forever after the first open,
+    // because the boot ramp settles above zero and stays there.
+    //
+    // Reading window.visible here is what makes the callers' bindings depend
+    // on it; QML tracks property reads through the call.
+    if (!window.visible) return 0
+
     // Each slot opens a fifth of a second after the one before it and takes
     // 300ms to come up.
     var start = slot * 0.11
