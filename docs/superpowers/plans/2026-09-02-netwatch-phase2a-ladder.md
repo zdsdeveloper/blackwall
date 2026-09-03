@@ -1125,6 +1125,187 @@ git commit -m "netwatch: install the unit reference the integrity check needs"
 
 ---
 
+### Task 6b: An ack that cannot be forged
+
+**Files:**
+- Modify: `netwatch/blackwall_netwatch/ladder.py`
+- Modify: `netwatch/blackwall_netwatch/daemon.py`
+- Modify: `netwatch/blackwall_netwatch/server.py`
+- Modify: `netwatch/bin/netwatchctl`
+- Test: `netwatch/tests/test_ladder.py`, `netwatch/tests/test_server.py`
+
+**Interfaces:**
+- Produces: `ladder.pending_token(entries) -> str | None`; `NetWatch.escalation_token()`; socket command `{"cmd": "ack", "token": str}`; `netwatchctl ack <token>`
+
+**Why.** `ack` as shipped is a bare unauthenticated socket write, and the socket
+is 0666. `while true; do netwatchctl ack; sleep 5; done` pins the unacknowledged
+count at one, and the lock rung is never reached — the one hard consequence this
+tool exists to deliver, suppressible with zero privilege and no proof the
+operator ever answered anything. The threat model is their own future self, who
+has unprivileged standing by definition.
+
+**Why a token, and why it is not in `status`.** The token must reach the plugin
+over a channel a spamming process cannot read. `status` is the wrong place:
+anything the plugin can read from the socket, any local process can read too.
+The daemon therefore passes it as an argument to the IPC call it makes into the
+session — root to plugin, over the plugin's own socket — and the plugin holds it
+in memory and hands it back.
+
+- [ ] **Step 1: Write the failing test for `pending_token`**
+
+```python
+class TestPendingToken(unittest.TestCase):
+    def test_none_when_no_breach(self):
+        self.assertIsNone(ladder.pending_token([]))
+
+    def test_the_token_of_the_latest_unacknowledged_breach(self):
+        entries = [{"kind": "breach", "at": NOW - 10, "token": "aaa"},
+                   {"kind": "breach", "at": NOW, "token": "bbb"}]
+        self.assertEqual(ladder.pending_token(entries), "bbb")
+
+    def test_none_once_acknowledged(self):
+        entries = [{"kind": "breach", "at": NOW - 10, "token": "aaa"},
+                   {"kind": "ack", "at": NOW, "token": "aaa"}]
+        self.assertIsNone(ladder.pending_token(entries))
+
+    def test_a_breach_after_an_ack_is_pending_again(self):
+        entries = [{"kind": "breach", "at": NOW - 20, "token": "aaa"},
+                   {"kind": "ack", "at": NOW - 10, "token": "aaa"},
+                   {"kind": "breach", "at": NOW, "token": "ccc"}]
+        self.assertEqual(ladder.pending_token(entries), "ccc")
+
+    def test_a_breach_without_a_token_yields_none(self):
+        # Breaches recorded before this task carry no token; they cannot be
+        # acknowledged, and must not crash the lookup either.
+        self.assertIsNone(ladder.pending_token([{"kind": "breach", "at": NOW}]))
+
+    def test_a_non_dict_entry_is_skipped(self):
+        self.assertIsNone(ladder.pending_token(["junk", 3, None]))
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests -v`
+Expected: FAIL, `module 'blackwall_netwatch.ladder' has no attribute 'pending_token'`
+
+- [ ] **Step 3: Implement `pending_token`**
+
+```python
+def pending_token(entries):
+    """The token of the most recent breach nothing has acknowledged.
+
+    None means there is nothing to acknowledge, and an ack presenting any token
+    at all must be refused. That is the whole point: without this an ack is a
+    bare socket write on a world-writable socket, and a shell loop could hold
+    the ladder below the lock rung for ever.
+    """
+    token = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        if kind == "ack":
+            token = None
+        elif kind == "breach":
+            candidate = entry.get("token")
+            token = candidate if isinstance(candidate, str) and candidate else None
+    return token
+```
+
+- [ ] **Step 4: Issue the token, and require it**
+
+In `daemon.py`, import `secrets`, and generate the token where the breach is
+recorded so it lands on the ledger entry:
+
+```python
+        token = secrets.token_hex(4) if verdict == "breach" else None
+        fields = {"targets": targets, "reasons": reasons}
+        if token:
+            fields["token"] = token
+        ledger.record(self.paths.ledger, verdict, **fields)
+        if verdict == "breach" and not first:
+            self._escalate(reasons, token)
+```
+
+and `_escalate` passes it on, calling the two token-carrying methods rather than
+bare `engage`:
+
+```python
+    def _escalate(self, reasons, token):
+        entries = ledger.read(self.paths.ledger)
+        step = ladder.rung(entries)
+        try:
+            if step == ladder.LOCK:
+                self.notifier("lock", [str(ladder.LOCK_SECONDS), token])
+            else:
+                self.notifier("challenge",
+                              [reasons[0] if reasons else "breach", token])
+        except Exception:
+            pass
+```
+
+In `server.handle`, the `ack` branch requires a matching token:
+
+```python
+    if cmd == "ack":
+        # Unprivileged by design -- the plugin runs as the operator -- but not
+        # unauthenticated. The token was delivered to the plugin over the
+        # session IPC, which a process spamming this socket cannot read.
+        token = request.get("token")
+        expected = ladder.pending_token(ledger.read(nw.paths.ledger))
+        if not expected or token != expected:
+            return {"ok": False, "error": "no acknowledgement is pending"}
+        ledger.record(nw.paths.ledger, "ack", token=token)
+        return {"ok": True}
+```
+
+In `netwatchctl`, `ack` takes the token as a positional argument:
+
+```python
+    ack = sub.add_parser("ack", help="acknowledge a breach you were shown")
+    ack.add_argument("token")
+```
+
+- [ ] **Step 5: Test that the bypass is closed**
+
+```python
+    def test_ack_without_a_token_is_refused(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertFalse(handle(self.nw, {"cmd": "ack"})["ok"])
+
+    def test_ack_with_the_wrong_token_is_refused(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "zzz"})["ok"])
+
+    def test_ack_with_the_right_token_is_accepted(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertTrue(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
+
+    def test_a_token_cannot_be_replayed(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        handle(self.nw, {"cmd": "ack", "token": "aaa"})
+        self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
+
+    def test_spamming_ack_cannot_hold_the_ladder_down(self):
+        # The bypass this task exists to close: a shell loop with no token.
+        for _ in range(20):
+            handle(self.nw, {"cmd": "ack"})
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="bbb")
+        entries = ledger.read(self.paths.ledger)
+        self.assertEqual(ladder.rung(entries), ladder.LOCK)
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd ~/.config/omarchy/plugins/zds.blackwall
+git add netwatch/blackwall_netwatch netwatch/bin/netwatchctl netwatch/tests
+git commit -m "netwatch: an ack has to prove it was answered"
+```
+
+---
+
 ### Task 8: The challenge overlay and the plugin's startup check
 
 **Files:**
@@ -1153,11 +1334,23 @@ The confirm button is enabled only when the typed text equals `phrase` **and** `
 In the existing `IpcHandler`, alongside `engage`:
 
 ```qml
-    function challenge(reason: string): string {
-      root.showChallenge(reason)
+    function challenge(reason: string, token: string): string {
+      root.showChallenge(reason, token)
       return "challenge shown"
     }
+
+    function lock(seconds: string, token: string): string {
+      root.engage(parseInt(seconds, 10))
+      root.pendingToken = token
+      return "locked"
+    }
 ```
+
+The token is held in memory and sent back with `netwatchctl ack <token>` — after
+the challenge is answered, or after a served lock expires. It is never read from
+`status`, because anything the plugin can read there a spamming process can read
+too. A served lock clears the slate: without that, reaching rung 2 would leave
+every later breach locking for the full six hours with no challenge ever offered.
 
 Add a `Process` that runs `netwatchctl status`, parses the JSON, and on a non-zero `unacknowledged` calls `root.engage(1200)` — the deferred rung, for a breach that happened with no session to lock. Run it from `Component.onCompleted`.
 
