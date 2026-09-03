@@ -77,33 +77,33 @@ class TestRung(unittest.TestCase):
         self.assertEqual(ladder.rung(entries, now=NOW), ladder.CHALLENGE)
 
 
-class TestPendingToken(unittest.TestCase):
+class TestPendingTokenHash(unittest.TestCase):
     def test_none_when_no_breach(self):
-        self.assertIsNone(ladder.pending_token([]))
+        self.assertIsNone(ladder.pending_token_hash([]))
 
-    def test_the_token_of_the_latest_unacknowledged_breach(self):
-        entries = [{"kind": "breach", "at": NOW - 10, "token": "aaa"},
-                   {"kind": "breach", "at": NOW, "token": "bbb"}]
-        self.assertEqual(ladder.pending_token(entries), "bbb")
+    def test_the_hash_of_the_latest_unacknowledged_breach(self):
+        entries = [{"kind": "breach", "at": NOW - 10, "token_hash": "aaa"},
+                   {"kind": "breach", "at": NOW, "token_hash": "bbb"}]
+        self.assertEqual(ladder.pending_token_hash(entries), "bbb")
 
     def test_none_once_acknowledged(self):
-        entries = [{"kind": "breach", "at": NOW - 10, "token": "aaa"},
-                   {"kind": "ack", "at": NOW, "token": "aaa"}]
-        self.assertIsNone(ladder.pending_token(entries))
+        entries = [{"kind": "breach", "at": NOW - 10, "token_hash": "aaa"},
+                   {"kind": "ack", "at": NOW, "token_hash": "aaa"}]
+        self.assertIsNone(ladder.pending_token_hash(entries))
 
     def test_a_breach_after_an_ack_is_pending_again(self):
-        entries = [{"kind": "breach", "at": NOW - 20, "token": "aaa"},
-                   {"kind": "ack", "at": NOW - 10, "token": "aaa"},
-                   {"kind": "breach", "at": NOW, "token": "ccc"}]
-        self.assertEqual(ladder.pending_token(entries), "ccc")
+        entries = [{"kind": "breach", "at": NOW - 20, "token_hash": "aaa"},
+                   {"kind": "ack", "at": NOW - 10, "token_hash": "aaa"},
+                   {"kind": "breach", "at": NOW, "token_hash": "ccc"}]
+        self.assertEqual(ladder.pending_token_hash(entries), "ccc")
 
-    def test_a_breach_without_a_token_yields_none(self):
-        # Breaches recorded before this task carry no token; they cannot be
+    def test_a_breach_without_a_token_hash_yields_none(self):
+        # Breaches recorded before this task carry no hash; they cannot be
         # acknowledged, and must not crash the lookup either.
-        self.assertIsNone(ladder.pending_token([{"kind": "breach", "at": NOW}]))
+        self.assertIsNone(ladder.pending_token_hash([{"kind": "breach", "at": NOW}]))
 
     def test_a_non_dict_entry_is_skipped(self):
-        self.assertIsNone(ladder.pending_token(["junk", 3, None]))
+        self.assertIsNone(ladder.pending_token_hash(["junk", 3, None]))
 
 
 if __name__ == "__main__":

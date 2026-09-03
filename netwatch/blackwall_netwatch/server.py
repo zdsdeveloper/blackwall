@@ -6,6 +6,8 @@ daemon enforce "adding is instant, removing is slow" as a property of the system
 rather than a convention someone has to keep.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -50,12 +52,17 @@ def handle(nw, request, peer_is_root=False):
     if cmd == "ack":
         # Unprivileged by design -- the plugin runs as the operator -- but not
         # unauthenticated. The token was delivered to the plugin over the
-        # session IPC, which a process spamming this socket cannot read.
+        # session IPC, which a process spamming this socket cannot read. Only
+        # its hash lives in the ledger, which is world-readable, so reading
+        # the ledger yields nothing that can be presented back here.
         token = request.get("token")
-        expected = ladder.pending_token(ledger.read(nw.paths.ledger))
-        if not expected or token != expected:
+        expected = ladder.pending_token_hash(ledger.read(nw.paths.ledger))
+        if not expected or not isinstance(token, str) or not token:
             return {"ok": False, "error": "no acknowledgement is pending"}
-        ledger.record(nw.paths.ledger, "ack", token=token)
+        offered = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(offered, expected):
+            return {"ok": False, "error": "no acknowledgement is pending"}
+        ledger.record(nw.paths.ledger, "ack", token_hash=expected)
         return {"ok": True}
     return {"ok": False, "error": "unknown command: %r" % (cmd,)}
 

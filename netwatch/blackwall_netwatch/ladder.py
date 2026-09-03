@@ -55,22 +55,20 @@ def rung(entries, now=None, window=WINDOW_SECONDS):
     return CHALLENGE if unacknowledged(entries, now, window) <= 1 else LOCK
 
 
-def pending_token(entries):
-    """The token of the most recent breach nothing has acknowledged.
+def pending_token_hash(entries):
+    """The hash of the most recent breach nothing has acknowledged.
 
-    None means there is nothing to acknowledge, and an ack presenting any token
-    at all must be refused. That is the whole point: without this an ack is a
-    bare socket write on a world-writable socket, and a shell loop could hold
-    the ladder below the lock rung for ever.
+    A hash rather than the token: the ledger is world-readable, and an
+    acknowledgement anyone can read out of a file is not an acknowledgement.
     """
-    token = None
+    digest = None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         kind = entry.get("kind")
         if kind == "ack":
-            token = None
+            digest = None
         elif kind == "breach":
-            candidate = entry.get("token")
-            token = candidate if isinstance(candidate, str) and candidate else None
-    return token
+            candidate = entry.get("token_hash")
+            digest = candidate if isinstance(candidate, str) and candidate else None
+    return digest

@@ -7,6 +7,7 @@ race to lose.
 """
 
 import dataclasses
+import hashlib
 import os
 import secrets
 import subprocess
@@ -219,10 +220,14 @@ class NetWatch:
             verdict = provenance.classify(
                 self.paths.window_marker, self.paths.pacman_lock,
                 proc_dir=self.proc_dir)
-        token = secrets.token_hex(4) if verdict == "breach" else None
+        token = secrets.token_hex(16) if verdict == "breach" else None
         fields = {"targets": targets, "reasons": reasons}
         if token:
-            fields["token"] = token
+            # The hash, never the token. The ledger is world-readable by design
+            # -- the operator should be able to read their own history -- and a
+            # token sitting in it would be an acknowledgement anyone could
+            # present without ever having been shown a challenge.
+            fields["token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
         ledger.record(self.paths.ledger, verdict, **fields)
         if verdict == "breach" and not first:
             self._escalate(reasons, token)
