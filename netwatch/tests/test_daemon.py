@@ -3,14 +3,24 @@ import os
 import tempfile
 import time
 import unittest
-from blackwall_netwatch import daemon, ledger, provenance
+from blackwall_netwatch import daemon, ladder, ledger, provenance
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
 
 
+UNIT = "[Service]\nExecStart=/usr/local/bin/blackwall-netwatch\n"
+
+
 def paths_in(d):
-    return Paths(
+    """Paths under `d`, with the daemon's own unit installed and intact.
+
+    The unit files are written here rather than in each setUp because an
+    intact wall is what every test not about the unit is assuming. Without
+    them a test aimed at hosts would also be reporting a weakened unit, and
+    its verdict would be right for a reason it never meant to assert.
+    """
+    paths = Paths(
         blocklist=os.path.join(d, "blocklist"),
         ledger=os.path.join(d, "ledger.jsonl"),
         hosts=os.path.join(d, "hosts"),
@@ -18,8 +28,14 @@ def paths_in(d):
         zen_package_policy=os.path.join(d, "distribution", "policies.json"),
         window_marker=os.path.join(d, "pacman-window"),
         pacman_lock=os.path.join(d, "db.lck"),
+        unit_file=os.path.join(d, "blackwall-netwatch.service"),
+        unit_source=os.path.join(d, "unit-source.service"),
         socket=os.path.join(d, "netwatch.sock"),
     )
+    for path in (paths.unit_file, paths.unit_source):
+        with open(path, "w") as f:
+            f.write(UNIT)
+    return paths
 
 
 class TestNetWatch(unittest.TestCase):
@@ -37,7 +53,16 @@ class TestNetWatch(unittest.TestCase):
         # manager build one under here.
         self.proc = os.path.join(self.dir, "proc")
         os.makedirs(self.proc)
-        self.nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc)
+        # Both injected, always. The default notifier reaches the live session
+        # over the real /proc, so an escalation from a test would lock the
+        # screen of whoever happens to be sitting at the machine running it.
+        self.calls = []
+        self.nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc,
+                           notifier=self.record)
+
+    def record(self, method, args=()):
+        self.calls.append((method, list(args)))
+        return True
 
     def make_proc_alive(self, comm="pacman"):
         os.makedirs(os.path.join(self.proc, "4242"), exist_ok=True)
@@ -50,7 +75,9 @@ class TestNetWatch(unittest.TestCase):
     def test_add_normalises_and_persists(self):
         self.assertEqual(self.nw.add("https://WWW.Example.com/x"), "example.com")
         self.assertEqual(self.nw.domains(), ["example.com"])
-        self.assertEqual(NetWatch(self.paths).domains(), ["example.com"])
+        self.assertEqual(
+            NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc,
+                     notifier=self.record).domains(), ["example.com"])
 
     def test_add_is_idempotent(self):
         self.nw.add("a.com")
@@ -139,14 +166,16 @@ class TestNetWatch(unittest.TestCase):
 
     def test_a_hosts_change_flushes_the_resolver_cache(self):
         calls = []
-        nw = NetWatch(self.paths, flusher=lambda: calls.append(1))
+        nw = NetWatch(self.paths, flusher=lambda: calls.append(1),
+                      proc_dir=self.proc, notifier=self.record)
         nw.add("a.com")
         nw.enforce()
         self.assertEqual(len(calls), 1)
 
     def test_an_unchanged_cycle_does_not_flush(self):
         calls = []
-        nw = NetWatch(self.paths, flusher=lambda: calls.append(1))
+        nw = NetWatch(self.paths, flusher=lambda: calls.append(1),
+                      proc_dir=self.proc, notifier=self.record)
         nw.add("a.com")
         nw.enforce()
         nw.enforce()
@@ -155,7 +184,8 @@ class TestNetWatch(unittest.TestCase):
     def test_a_zen_only_change_does_not_flush(self):
         # The resolver cache has nothing to do with the browser policy file.
         calls = []
-        nw = NetWatch(self.paths, flusher=lambda: calls.append(1))
+        nw = NetWatch(self.paths, flusher=lambda: calls.append(1),
+                      proc_dir=self.proc, notifier=self.record)
         nw.add("a.com")
         nw.enforce()
         os.unlink(self.paths.zen_policy)
@@ -389,6 +419,127 @@ class TestNetWatch(unittest.TestCase):
         # transaction, so "already gone" is the ordinary case.
         self.nw.close_window()
         self.assertFalse(os.path.exists(self.paths.window_marker))
+
+
+class TestWeakeningAndLadder(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.paths = paths_in(self.dir)
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        for path in (self.paths.unit_file, self.paths.unit_source):
+            with open(path, "w") as f:
+                f.write("[Service]\n")
+        self.calls = []
+        self.nw = NetWatch(self.paths, flusher=lambda: None,
+                           proc_dir=self.empty_proc(),
+                           notifier=lambda m, a=(): self.calls.append((m, list(a))) or True)
+
+    def empty_proc(self):
+        p = os.path.join(self.dir, "proc")
+        os.makedirs(os.path.join(p, "1"), exist_ok=True)
+        with open(os.path.join(p, "1", "comm"), "w") as f:
+            f.write("bash\n")
+        return p
+
+    def settle(self):
+        self.nw.add("a.com")
+        self.nw.enforce()          # init
+        self.nw.enforce()          # quiet
+        self.calls.clear()
+
+    def test_an_unrelated_hosts_edit_is_a_repair_not_a_breach(self):
+        self.settle()
+        with open(self.paths.hosts, "a") as f:
+            f.write("10.0.0.9 my-dev-box.local\n")
+        result = self.nw.enforce()
+        self.assertIn(result["verdict"], (None, "repair"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_removed_sink_line_is_a_breach_and_challenges(self):
+        self.settle()
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        result = self.nw.enforce()
+        self.assertEqual(result["verdict"], "breach")
+        self.assertEqual(self.calls, [("challenge", [result["reasons"][0]])])
+
+    def test_a_second_breach_locks(self):
+        self.settle()
+        for _ in range(2):
+            with open(self.paths.hosts, "w") as f:
+                f.write("127.0.0.1 localhost\n")
+            self.nw.enforce()
+        self.assertEqual(self.calls[-1][0], "engage")
+        self.assertEqual(self.calls[-1][1], [str(ladder.LOCK_SECONDS)])
+
+    def test_a_masked_unit_is_a_breach(self):
+        self.settle()
+        os.unlink(self.paths.unit_file)
+        os.symlink("/dev/null", self.paths.unit_file)
+        self.assertEqual(self.nw.enforce()["verdict"], "breach")
+
+    def test_the_first_enforcement_after_start_never_escalates(self):
+        # A restart mid-transaction used to look like tampering. In Phase 2 that
+        # is a lockout for rebooting.
+        self.settle()
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        fresh = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.empty_proc(),
+                         notifier=lambda m, a=(): self.calls.append((m, list(a))) or True)
+        fresh.enforce()
+        self.assertEqual(self.calls, [])
+
+    def test_a_standing_breach_does_not_re_fire_the_ladder(self):
+        # Otherwise an unanswered challenge reappears every cycle until the
+        # operator kills the shell to stop it.
+        self.settle()
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.nw.enforce()
+        before = len(self.calls)
+        self.nw.enforce()
+        self.nw.enforce()
+        self.assertEqual(len(self.calls), before)
+
+    def test_a_standing_unrepairable_breach_does_not_re_fire_either(self):
+        # The masked unit is the one weakening the repair loop cannot undo, so
+        # it is the one that would otherwise be re-recorded and re-escalated on
+        # every cycle: challenge, then a fresh lock every thirty seconds for as
+        # long as it stands.
+        self.settle()
+        os.unlink(self.paths.unit_file)
+        os.symlink("/dev/null", self.paths.unit_file)
+        self.assertEqual(self.nw.enforce()["verdict"], "breach")
+        before = len(self.calls)
+        for _ in range(3):
+            self.assertIsNone(self.nw.enforce()["verdict"])
+        self.assertEqual(len(self.calls), before)
+        breaches = [e for e in ledger.read(self.paths.ledger)
+                    if e.get("kind") == "breach"]
+        self.assertEqual(len(breaches), 1)
+
+    def test_drift_never_escalates(self):
+        self.settle()
+        with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.assertEqual(self.nw.enforce()["verdict"], "drift")
+        self.assertEqual(self.calls, [])
+
+    def test_a_notifier_that_fails_does_not_break_enforcement(self):
+        self.settle()
+        nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.empty_proc(),
+                      notifier=lambda m, a=(): (_ for _ in ()).throw(OSError("no session")))
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        # Spends this instance's first-enforcement grace, so the breach below
+        # actually reaches the notifier instead of passing it by.
+        self.assertEqual(nw.enforce()["verdict"], "breach")
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.assertEqual(nw.enforce()["verdict"], "breach")
 
 
 if __name__ == "__main__":

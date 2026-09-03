@@ -11,7 +11,8 @@ import os
 import subprocess
 import time
 
-from . import blocklist, hosts, ledger, provenance, zenpolicy
+from . import (blocklist, hosts, integrity, ladder, ledger, provenance,
+               session, zenpolicy)
 
 
 # The socket is 0666 by design -- anyone on this machine may add a domain -- so
@@ -41,6 +42,8 @@ class Paths:
     zen_package_policy: str
     window_marker: str
     pacman_lock: str
+    unit_file: str
+    unit_source: str
     socket: str
 
 
@@ -71,10 +74,22 @@ def flush_resolver_cache():
 
 class NetWatch:
     def __init__(self, paths, flusher=flush_resolver_cache,
-                 proc_dir=provenance.PROC_DIR):
+                 proc_dir=provenance.PROC_DIR, notifier=session.notify):
         self.paths = paths
         self.flusher = flusher
         self.proc_dir = proc_dir
+        self.notifier = notifier
+        # The grace for the cycle that runs as the daemon comes up. A restart
+        # in the middle of a package transaction finds the managed files
+        # part-written and used to read that as a pair of hands; in Phase 2
+        # reading it that way is a locked screen for rebooting. The first
+        # cycle records what it finds and escalates nothing.
+        self._first_enforcement = True
+        # What was missing on the previous cycle. A weakening the repair loop
+        # cannot undo -- a masked unit, above all -- is still there next cycle
+        # and the one after, and re-recording it each time would fire the
+        # ladder every thirty seconds for as long as it stands.
+        self._last_reasons = None
         # Set by add(), consumed by the next enforce(). An add changes the
         # blocklist, so the enforcement it triggers finds the managed files
         # disagreeing with it -- which is indistinguishable, to the classifier,
@@ -124,6 +139,14 @@ class NetWatch:
     def enforce(self):
         self._reap_dead_window()
         domains = self.domains()
+        # Asked before the repair, because the repair is what destroys the
+        # evidence: once hosts.apply has put the sink lines back, nothing on
+        # disk still says they were missing a moment ago. This is the whole
+        # difference between Phase 1 and Phase 2 -- the question is no longer
+        # "did the text change" but "was a protection actually missing".
+        reasons = integrity.weakened(
+            self.paths.hosts, domains, self.paths.zen_policy,
+            self.paths.unit_file, self.paths.unit_source)
         targets = []
         if hosts.apply(self.paths.hosts, domains):
             targets.append("hosts")
@@ -131,11 +154,25 @@ class NetWatch:
         package = zenpolicy.read_package_policies(self.paths.zen_package_policy)
         if zenpolicy.apply(self.paths.zen_policy, package):
             targets.append("zen_policy")
-        if not targets:
-            # Consumed here too. The flag is spent by the enforcement it was
-            # raised for whether or not that enforcement found anything to do;
-            # left set past an empty cycle it excuses the NEXT hand edit as our
-            # own work, which is a hole in the wall.
+        # Spent by the cycle it belongs to, whether or not that cycle found
+        # anything: a grace that survives every quiet cycle is not a grace for
+        # the start, it is a free pass held in reserve for the first breach of
+        # the day, whenever that comes.
+        first = self._first_enforcement
+        self._first_enforcement = False
+        standing = reasons == self._last_reasons
+        self._last_reasons = reasons
+        if not targets and (not reasons or standing):
+            # Nothing was repaired, and nothing is missing that was not already
+            # missing and already recorded last cycle. The second half is what
+            # keeps a weakening outside the repair loop's reach -- a masked
+            # unit -- from being filed afresh on every cycle for as long as it
+            # stands.
+            #
+            # The add() excuse is consumed here too. The flag is spent by the
+            # enforcement it was raised for whether or not that enforcement
+            # found anything to do; left set past an empty cycle it excuses the
+            # NEXT hand edit as our own work, which is a hole in the wall.
             self._applied_pending = False
             return {"changed": False, "verdict": None, "targets": []}
         # Consumed unconditionally, whatever verdict wins below: a flag left
@@ -149,12 +186,41 @@ class NetWatch:
             verdict = "init"
         elif applied:
             verdict = "applied"
+        elif not reasons:
+            # Something changed but no protection was missing: an unrelated
+            # edit, a reordering. Repaired, recorded, never punished.
+            verdict = "repair"
         else:
             verdict = provenance.classify(
                 self.paths.window_marker, self.paths.pacman_lock,
                 proc_dir=self.proc_dir)
-        ledger.record(self.paths.ledger, verdict, targets=targets)
-        return {"changed": True, "verdict": verdict, "targets": targets}
+        ledger.record(self.paths.ledger, verdict, targets=targets,
+                      reasons=reasons)
+        if verdict == "breach" and not first:
+            self._escalate(reasons)
+        return {"changed": bool(targets), "verdict": verdict,
+                "targets": targets, "reasons": reasons}
+
+    def _escalate(self, reasons):
+        """Fire the ladder for a breach just recorded.
+
+        Only for a NEW breach: a standing one must not re-fire every cycle, or
+        an unanswered challenge reappears every thirty seconds until the
+        operator kills the shell to stop it -- which teaches them that killing
+        the shell is how you deal with the Blackwall.
+        """
+        entries = ledger.read(self.paths.ledger)
+        step = ladder.rung(entries)
+        try:
+            if step == ladder.LOCK:
+                self.notifier("engage", [str(ladder.LOCK_SECONDS)])
+            else:
+                self.notifier("challenge", [reasons[0] if reasons else "breach"])
+        except Exception:
+            # No session, no shell, no screen to lock. That is an ordinary
+            # outcome rather than an error: the breach stays unacknowledged and
+            # the plugin picks it up when it next starts.
+            pass
 
     def _enforced_before(self):
         # The ledger is the record of whether this machine has ever been in a

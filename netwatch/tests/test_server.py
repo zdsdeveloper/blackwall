@@ -9,8 +9,17 @@ from blackwall_netwatch.server import handle
 from blackwall_netwatch import daemon, ledger, server
 
 
+UNIT = "[Service]\nExecStart=/usr/local/bin/blackwall-netwatch\n"
+
+
 def paths_in(d):
-    return Paths(
+    """Paths under `d`, with the daemon's own unit installed and intact.
+
+    The unit files are written here, not in each setUp: an intact wall is the
+    precondition these tests assume, and without them a test about the socket
+    would also be asserting over a weakened unit.
+    """
+    paths = Paths(
         blocklist=os.path.join(d, "blocklist"),
         ledger=os.path.join(d, "ledger.jsonl"),
         hosts=os.path.join(d, "hosts"),
@@ -18,8 +27,21 @@ def paths_in(d):
         zen_package_policy=os.path.join(d, "dist.json"),
         window_marker=os.path.join(d, "pacman-window"),
         pacman_lock=os.path.join(d, "db.lck"),
+        unit_file=os.path.join(d, "blackwall-netwatch.service"),
+        unit_source=os.path.join(d, "unit-source.service"),
         socket=os.path.join(d, "netwatch.sock"),
     )
+    for path in (paths.unit_file, paths.unit_source):
+        with open(path, "w") as f:
+            f.write(UNIT)
+    return paths
+
+
+def quiet_notifier(method, args=()):
+    """Never the real one. session.notify reads the live /proc and shells out
+    to the session's IPC, and an escalation out of a test would lock the screen
+    of whoever is sitting at the machine running it."""
+    return False
 
 
 class TestHandle(unittest.TestCase):
@@ -33,7 +55,8 @@ class TestHandle(unittest.TestCase):
         self.proc = os.path.join(self.dir, "proc")
         os.makedirs(self.proc)
         self.nw = NetWatch(
-            paths_in(self.dir), flusher=lambda: None, proc_dir=self.proc)
+            paths_in(self.dir), flusher=lambda: None, proc_dir=self.proc,
+            notifier=quiet_notifier)
 
     def test_add_returns_the_normalised_domain(self):
         reply = handle(self.nw, {"cmd": "add", "domain": "https://WWW.A.com/"})
@@ -409,7 +432,8 @@ class TestServeConnection(unittest.TestCase):
         self.proc = os.path.join(self.dir, "proc")
         os.makedirs(self.proc)
         self.nw = NetWatch(
-            paths_in(self.dir), flusher=lambda: None, proc_dir=self.proc)
+            paths_in(self.dir), flusher=lambda: None, proc_dir=self.proc,
+            notifier=quiet_notifier)
 
     def test_a_peer_that_hangs_up_mid_reply_does_not_raise(self):
         # The socket is 0666 by design, so connect-then-disconnect is ordinary.
@@ -482,7 +506,8 @@ class TestServeOnceEnforcementBudget(unittest.TestCase):
         proc = os.path.join(self.dir, "proc")
         os.makedirs(proc)
         self.nw = NetWatch(
-            paths_in(self.dir), flusher=lambda: None, proc_dir=proc)
+            paths_in(self.dir), flusher=lambda: None, proc_dir=proc,
+            notifier=quiet_notifier)
         self.calls = []
         self.original = server._enforce_quietly
         server._enforce_quietly = lambda nw: self.calls.append(1)

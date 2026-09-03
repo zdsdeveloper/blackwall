@@ -16,6 +16,8 @@ PATHS = Paths(
     zen_package_policy="/opt/zen-browser-bin/distribution/policies.json",
     window_marker="/run/blackwall/pacman-window",
     pacman_lock="/var/lib/pacman/db.lck",
+    unit_file="/etc/systemd/system/blackwall-netwatch.service",
+    unit_source="/usr/local/lib/blackwall-netwatch/blackwall-netwatch.service",
     socket="/run/blackwall/netwatch.sock",
 )
 
