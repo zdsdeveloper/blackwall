@@ -34,6 +34,11 @@ install -d -m 0755 /etc/pacman.d/hooks
 install -m 0644 "$here/hooks/"*.hook /etc/pacman.d/hooks/
 install -m 0644 "$here/units/blackwall-netwatch.service" /etc/systemd/system/
 
+# The reference the integrity check compares against. Kept beside the package
+# rather than in /etc, so an edit to the live unit has something to differ from.
+install -m 0644 "$here/units/blackwall-netwatch.service" \
+  /usr/local/lib/blackwall-netwatch/blackwall-netwatch.service
+
 install -d -m 0755 /var/lib/blackwall
 touch /var/lib/blackwall/blocklist
 chmod 0644 /var/lib/blackwall/blocklist
