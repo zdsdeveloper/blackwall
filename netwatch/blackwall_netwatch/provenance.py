@@ -66,11 +66,15 @@ def transaction_in_progress(pacman_lock, now=None, proc_dir=PROC_DIR):
     two, and the reaper's was the looser: it took the mere existence of db.lck
     as proof, so a lock left behind by a killed pacman kept the sanctioned
     window refreshed for ever and every hand edit after it read as drift.
+
+    The lock is what makes a transaction, not the process. A live pacman with no
+    lock is someone running `pacman -Q` -- an unprivileged query anyone can hold
+    open in a loop -- and treating that as a transaction would hand out drift
+    for free. The process check exists only to tell a stale lock from a slow one.
     """
-    now = time.time() if now is None else now
-    age = _age(pacman_lock, now)
+    age = _age(pacman_lock, now if now is not None else time.time())
     if age is None:
-        return transaction_alive(proc_dir)
+        return False
     return age <= STALE_AFTER_SECONDS or transaction_alive(proc_dir)
 
 

@@ -279,15 +279,15 @@ class TestNetWatch(unittest.TestCase):
         self.assertTrue(os.path.exists(self.paths.window_marker))
         self.assertGreater(os.stat(self.paths.window_marker).st_mtime, stale + 60)
 
-    def test_a_live_package_manager_refreshes_the_window_without_any_lock(self):
-        # paru drives libalpm itself; the lock can be absent or already dropped
-        # while the transaction is still very much running.
-        self._write_marker(age=provenance.STALE_AFTER_SECONDS + 60)
+    def test_a_live_package_manager_alone_does_not_hold_the_window_open(self):
+        # `pacman -Q` is an ordinary unprivileged query and it runs a process
+        # named pacman. If a live process alone held the window open, any user
+        # could run one in a loop and keep the wall permanently in drift with
+        # no privilege at all. The lock is what makes a transaction.
+        self._write_marker(age=daemon.WINDOW_GRACE_SECONDS + 30)
         self.make_proc_alive("paru")
         self.nw._reap_dead_window()
-        self.assertTrue(os.path.exists(self.paths.window_marker))
-        self.assertLess(
-            time.time() - os.stat(self.paths.window_marker).st_mtime, 60)
+        self.assertFalse(os.path.exists(self.paths.window_marker))
 
     def test_reap_gives_a_just_closed_window_its_grace(self):
         # pacman exits a moment before the daemon's next cycle notices. Cutting
@@ -348,6 +348,10 @@ class TestNetWatch(unittest.TestCase):
         with open(self.paths.window_marker, "w") as f:
             f.write("")
         os.utime(self.paths.window_marker, (stale, stale))
+        # The lock as well as the process: a transaction is made by db.lck, and
+        # a real -Syu holds it for the whole of one however long that runs.
+        # The process check is only what tells this stale lock from a dead one.
+        self._write_lock(age=provenance.STALE_AFTER_SECONDS + 60)
         self.make_proc_alive("pacman")
         self.nw._reap_dead_window()
         self.assertTrue(os.path.exists(self.paths.window_marker))

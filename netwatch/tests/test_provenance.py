@@ -71,6 +71,33 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(
             provenance.classify(self.marker, self.lock, proc_dir=idle), "drift")
 
+    def test_a_live_package_manager_with_no_lock_is_not_a_transaction(self):
+        # `pacman -Q` lists installed packages. It is unprivileged, it takes no
+        # lock, and it runs a process named pacman -- so if a live process were
+        # enough on its own, `while true; do pacman -Q; done` would force
+        # permanent drift for any user on the machine and the wall would detect
+        # nothing. A transaction is made by db.lck; the process scan exists only
+        # to tell a stale lock from a slow one. Do not widen this.
+        busy = self.make_proc("querying-proc", "pacman")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=busy), "breach")
+
+    def test_a_fresh_marker_is_still_drift_with_a_live_pacman_and_no_lock(self):
+        # The other half: narrowing the lock rule left the hook marker's own
+        # path exactly as it was.
+        self.touch(self.marker)
+        busy = self.make_proc("querying-proc2", "pacman")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=busy), "drift")
+
+    def test_a_stale_lock_with_a_live_pacman_is_still_drift(self):
+        # The case the process scan is for: a big -Syu outruns the staleness
+        # bound while genuinely holding the lock.
+        self.touch(self.lock, age=provenance.STALE_AFTER_SECONDS + 60)
+        busy = self.make_proc("syu-proc", "pacman")
+        self.assertEqual(
+            provenance.classify(self.marker, self.lock, proc_dir=busy), "drift")
+
     def test_unreadable_proc_is_treated_as_no_transaction(self):
         self.touch(self.lock, age=provenance.STALE_AFTER_SECONDS + 60)
         missing = os.path.join(self.dir, "no-such-proc")
