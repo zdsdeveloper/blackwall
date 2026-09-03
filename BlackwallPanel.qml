@@ -255,15 +255,23 @@ Item {
       anchors.fill: parent
 
       // The static, behind everything, breathing with the wall.
-      // Sand, not snow. The lock wants a field that snaps and tears because
-      // it is a wall coming down; a station someone reads for minutes at a
-      // time wants something that drifts and never asks to be looked at.
+      // The lock wants a field that snaps and tears, because it is a wall
+      // coming down. A station someone reads for minutes wants the same field
+      // slowed right down and stripped of its loud half — but still a field
+      // you can see. Ground too fine it stops being static and becomes an
+      // even grey nothing, which is where 2.6 had it.
       GlitchBackground {
         anchors.fill: parent
         running: window.visible
         externalClock: root.clock
-        intensity: (0.20 + 0.10 * wall.breath) * root.powerAt(0)
-        grainScale: 2.6
+        intensity: (1.90 + 0.60 * wall.breath) * root.powerAt(0)
+        // Coarser than the lock's, not finer. Ground fine enough and static
+        // stops being static: the cells fall below what the eye separates and
+        // the whole field averages out to a flat grey nothing. Bigger cells at
+        // a low level read as a surface with texture on it, which is the thing
+        // that was wanted -- something behind everything, not something
+        // demanding attention.
+        grainScale: 0.72
         stepRate: 2.5
         artifacts: 0
       }
@@ -306,7 +314,7 @@ Item {
 
           // A carrier between the title and the link state. It is the header's
           // share of the motion, and it stops dead when the daemon does.
-          StationCircuit {
+          StationConduit {
             clock: root.clock
             anchors.verticalCenter: parent.verticalCenter
             anchors.left: brand.right
@@ -315,8 +323,7 @@ Item {
             anchors.rightMargin: 24
             height: 16
             flow: "across"
-            traces: 2
-            seed: 7717
+            lanes: 1
             speed: root.daemonAnswering ? 1.6 : 0.15
             power: root.powerAt(1)
             inkColor: root.ink
@@ -358,7 +365,7 @@ Item {
           anchors.right: parent.right
           height: Math.max(132, Math.min(238, Math.round(parent.height * 0.26)))
 
-          StationCircuit {
+          StationConduit {
 
             clock: root.clock
             anchors.left: parent.left
@@ -366,14 +373,14 @@ Item {
             anchors.bottom: parent.bottom
             width: Math.round(parent.width * 0.21)
             flow: "down"
-            traces: 4
-            seed: 4021
+            lanes: 5
+            packetSpacing: 58
             speed: root.daemonAnswering ? 1.0 : 0.2
-            power: root.powerAt(2)
+            power: root.powerAt(2) * 0.5
             inkColor: root.ink
           }
 
-          StationCircuit {
+          StationConduit {
 
             clock: root.clock
             anchors.right: parent.right
@@ -381,10 +388,10 @@ Item {
             anchors.bottom: parent.bottom
             width: Math.round(parent.width * 0.21)
             flow: "down"
-            traces: 4
-            seed: 9137
+            lanes: 5
+            packetSpacing: 58
             speed: root.daemonAnswering ? 1.15 : 0.2
-            power: root.powerAt(2)
+            power: root.powerAt(2) * 0.5
             inkColor: root.ink
           }
 
@@ -496,13 +503,12 @@ Item {
             power: root.powerAt(7)
             inkColor: root.ink
 
-            StationCircuit {
+            StationConduit {
 
               clock: root.clock
               anchors.fill: parent
               flow: "across"
-              traces: 4
-              seed: 2551
+              lanes: 4
               speed: root.daemonAnswering ? 1.3 : 0.2
               power: root.powerAt(7)
               inkColor: root.ink
@@ -677,7 +683,7 @@ Item {
             // The panel's own internals, filling what the readings do not.
             // A framed box with a third of its height empty reads as a
             // layout that ran out rather than an instrument.
-            StationCircuit {
+            StationConduit {
               clock: root.clock
               anchors.top: subjectStack.bottom
               anchors.topMargin: 14
@@ -686,10 +692,9 @@ Item {
               anchors.bottom: parent.bottom
               visible: height > 30
               flow: "down"
-              traces: 3
-              seed: 6011
+              lanes: 3
               speed: root.daemonAnswering ? 0.8 : 0.15
-              power: root.powerAt(7)
+              power: root.powerAt(7) * 0.62
               inkColor: root.ink
             }
           }
@@ -997,7 +1002,7 @@ Item {
               }
             }
 
-            StationCircuit {
+            StationConduit {
 
               clock: root.clock
               anchors.top: telemetryStack.bottom
@@ -1007,10 +1012,9 @@ Item {
               anchors.bottom: parent.bottom
               visible: height > 30
               flow: "down"
-              traces: 3
-              seed: 8803
+              lanes: 3
               speed: root.daemonAnswering ? 1.4 : 0.15
-              power: root.powerAt(8)
+              power: root.powerAt(8) * 0.62
               inkColor: root.ink
             }
           }

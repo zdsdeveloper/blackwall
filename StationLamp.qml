@@ -60,8 +60,17 @@ Item {
     return 0
   }
 
-  implicitHeight: Math.max(scaleUnit, labelText.implicitHeight)
-  implicitWidth: dot.width + labelText.implicitWidth + scaleUnit * 0.6
+  // The halo is a circle up to 3.2 dot-widths across, centred on the dot. If
+  // the lamp is only as big as its dot then most of that circle lies outside
+  // the item, and every frame on the station clips its contents -- so the glow
+  // was being sliced off square on the side nearest the border. The lamp has
+  // to be as big as the light it gives off.
+  readonly property real dotSize: Math.round(root.scaleUnit * 0.52)
+  readonly property real haloRoom: Math.round(root.dotSize * 1.15)
+
+  implicitHeight: Math.max(root.dotSize * 3.3, labelText.implicitHeight)
+  implicitWidth: root.haloRoom + dot.width + labelText.implicitWidth
+    + root.scaleUnit * 0.6
 
   // The halo. No blur is available, so a larger, dimmer copy stands in — the
   // same trick the wall uses for its bloom.
@@ -79,7 +88,8 @@ Item {
   Rectangle {
     id: dot
     anchors.verticalCenter: parent.verticalCenter
-    width: Math.round(root.scaleUnit * 0.52)
+    x: root.haloRoom
+    width: root.dotSize
     height: width
     radius: width / 2
     color: root.bodyColor
