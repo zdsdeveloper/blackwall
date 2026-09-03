@@ -41,6 +41,7 @@ def main():
         action="store_true",
         help="finish a package transaction window once the repair has landed",
     )
+    sub.add_parser("ack", help="acknowledge outstanding breaches")
     args = parser.parse_args()
 
     if args.command == "add":
@@ -61,11 +62,17 @@ def main():
         if not reply["ok"]:
             sys.exit(reply["error"])
         print("changed: %s" % reply["result"]["changed"])
+    elif args.command == "ack":
+        call({"cmd": "ack"})
+        print("acknowledged")
     else:
         reply = call({"cmd": "status"})
         print("domains  %d" % reply["domains"])
         print("breaches %d" % reply["breaches"])
         print("failures %d" % reply["enforce_failures"])
+        print("unacked  %d" % reply.get("unacknowledged", 0))
+        for reason in reply.get("weakened", []):
+            print("WEAK     %s" % reason)
 
 
 if __name__ == "__main__":

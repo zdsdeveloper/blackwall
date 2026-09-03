@@ -536,5 +536,50 @@ class TestServeOnceEnforcementBudget(unittest.TestCase):
         self.assertIsNotNone(returned)
 
 
+class TestAck(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.paths = paths_in(self.dir)
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        for path in (self.paths.unit_file, self.paths.unit_source):
+            with open(path, "w") as f:
+                f.write("[Service]\n")
+        self.nw = NetWatch(self.paths, flusher=lambda: None,
+                           notifier=lambda m, a=(): True)
+
+    def test_ack_records_an_entry(self):
+        reply = handle(self.nw, {"cmd": "ack"})
+        self.assertTrue(reply["ok"])
+        self.assertIn("ack", [e["kind"] for e in ledger.read(self.paths.ledger)])
+
+    def test_ack_clears_the_unacknowledged_count(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"])
+        self.assertEqual(handle(self.nw, {"cmd": "status"})["unacknowledged"], 1)
+        handle(self.nw, {"cmd": "ack"})
+        self.assertEqual(handle(self.nw, {"cmd": "status"})["unacknowledged"], 0)
+
+    def test_ack_needs_no_root(self):
+        # The plugin runs as the operator, not as root.
+        self.assertTrue(handle(self.nw, {"cmd": "ack"}, peer_is_root=False)["ok"])
+
+    def test_status_reports_weakening(self):
+        self.nw.add("a.com")
+        self.nw.enforce()
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.assertTrue(handle(self.nw, {"cmd": "status"})["weakened"])
+
+    def test_status_reports_no_weakening_when_intact(self):
+        self.nw.add("a.com")
+        self.nw.enforce()
+        self.assertEqual(handle(self.nw, {"cmd": "status"})["weakened"], [])
+
+    def test_ack_is_not_a_mutating_command(self):
+        # It changes the ladder, not the wall; it must not force an enforcement.
+        conn = _FakeConn([b'{"cmd": "ack"}\n'])
+        self.assertFalse(server.serve_connection(self.nw, conn))
+
+
 if __name__ == "__main__":
     unittest.main()

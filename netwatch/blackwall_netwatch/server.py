@@ -47,6 +47,12 @@ def handle(nw, request, peer_is_root=False):
         if close:
             nw.close_window()
         return {"ok": True, "result": result}
+    if cmd == "ack":
+        # Deliberately unprivileged: the plugin runs as the operator. All this
+        # can do is clear a count, which only ever makes the next breach
+        # cheaper by one rung -- and the breach itself is already recorded.
+        ledger.record(nw.paths.ledger, "ack")
+        return {"ok": True}
     return {"ok": False, "error": "unknown command: %r" % (cmd,)}
 
 

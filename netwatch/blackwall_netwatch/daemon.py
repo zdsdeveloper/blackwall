@@ -327,10 +327,15 @@ class NetWatch:
 
     def status(self):
         entries = ledger.read(self.paths.ledger)
+        domains = self.domains()
         return {
-            "domains": len(self.domains()),
+            "domains": len(domains),
             # .get, matching _enforced_before: a truncated or hand-written
             # ledger line without a "kind" must not take status down with it.
             "breaches": len([e for e in entries if e.get("kind") == "breach"]),
             "enforce_failures": self.enforce_failures,
+            "unacknowledged": ladder.unacknowledged(entries),
+            "weakened": integrity.weakened(
+                self.paths.hosts, domains, self.paths.zen_policy,
+                self.paths.unit_file, self.paths.unit_source),
         }
