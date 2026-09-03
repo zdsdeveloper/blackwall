@@ -3,7 +3,7 @@ import os
 import tempfile
 import time
 import unittest
-from blackwall_netwatch import daemon, ladder, ledger, provenance
+from blackwall_netwatch import daemon, hosts, ladder, ledger, provenance
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
@@ -448,6 +448,24 @@ class TestWeakeningAndLadder(unittest.TestCase):
         self.nw.enforce()          # quiet
         self.calls.clear()
 
+    def restarted(self):
+        """A second NetWatch over the same paths, as a restart leaves one."""
+        return NetWatch(
+            self.paths, flusher=lambda: None, proc_dir=self.empty_proc(),
+            notifier=lambda m, a=(): self.calls.append((m, list(a))) or True)
+
+    def break_hosts(self):
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+
+    def mask_unit(self):
+        os.unlink(self.paths.unit_file)
+        os.symlink("/dev/null", self.paths.unit_file)
+
+    def breaches(self):
+        return [e for e in ledger.read(self.paths.ledger)
+                if e.get("kind") == "breach"]
+
     def test_an_unrelated_hosts_edit_is_a_repair_not_a_breach(self):
         self.settle()
         with open(self.paths.hosts, "a") as f:
@@ -518,6 +536,84 @@ class TestWeakeningAndLadder(unittest.TestCase):
         breaches = [e for e in ledger.read(self.paths.ledger)
                     if e.get("kind") == "breach"]
         self.assertEqual(len(breaches), 1)
+
+    def test_a_shrinking_reason_set_does_not_re_fire(self):
+        # A standing weakening plus a second one that then gets repaired leaves
+        # the first still standing. That is the same breach with one part
+        # mended, not a new one -- and an equality test would file a second
+        # entry for it, raising the rung for the whole of the ladder's window.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()                      # the unit, recorded once
+        self.nw.enforce()                      # still standing, quiet
+        self.break_hosts()
+        self.nw.enforce()                      # hosts as well: a new event
+        calls = len(self.calls)
+        recorded = len(self.breaches())
+        # Hosts is repaired now; the unit is all that is left, and it was
+        # already recorded and already escalated.
+        self.assertIsNone(self.nw.enforce()["verdict"])
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(len(self.breaches()), recorded)
+
+    def test_a_growing_reason_set_does_re_fire(self):
+        # The mirror of it. A weakening that arrives alongside one already
+        # standing is a new event, or the first breach of the day would buy
+        # silence for every one after it.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()
+        self.nw.enforce()
+        self.assertEqual([m for m, _ in self.calls], ["challenge"])
+        self.break_hosts()
+        self.assertEqual(self.nw.enforce()["verdict"], "breach")
+        self.assertEqual(self.calls[-1][0], "engage")
+        self.assertEqual(len(self.breaches()), 2)
+
+    def test_a_restart_cannot_mint_a_fresh_grace_after_a_recent_breach(self):
+        # The grace cannot live in instance state alone. `systemctl kill` is
+        # not a stop job and Restart=always brings the daemon straight back, so
+        # a per-instance grace would be reissued every few seconds and the
+        # ladder would never leave the ground while breaches piled up.
+        self.settle()
+        self.break_hosts()
+        self.nw.enforce()
+        self.assertEqual([m for m, _ in self.calls], ["challenge"])
+        restarted = self.restarted()
+        self.break_hosts()
+        self.assertEqual(restarted.enforce()["verdict"], "breach")
+        self.assertEqual(self.calls[-1][0], "engage")
+
+    def test_a_restart_still_gets_the_grace_when_no_breach_is_recent(self):
+        # The case the grace exists for. A daemon coming up in the middle of a
+        # transaction has drift on the record, not a breach, and its first
+        # cycle still escalates nothing.
+        self.settle()
+        with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        self.break_hosts()
+        self.assertEqual(self.nw.enforce()["verdict"], "drift")
+        os.unlink(self.paths.window_marker)
+        restarted = self.restarted()
+        self.break_hosts()
+        self.assertEqual(restarted.enforce()["verdict"], "breach")
+        self.assertEqual(self.calls, [])
+
+    def test_a_change_that_removed_no_protection_records_repair(self):
+        # The markers stripped and the sink lines left exactly where they are:
+        # the region has to be written back, and nothing was ever missing.
+        # Repaired, recorded, never punished.
+        self.settle()
+        with open(self.paths.hosts) as f:
+            kept = [line for line in f.read().splitlines()
+                    if line.strip() not in (hosts.BEGIN, hosts.END)]
+        with open(self.paths.hosts, "w") as f:
+            f.write("\n".join(kept) + "\n")
+        result = self.nw.enforce()
+        self.assertEqual(result["verdict"], "repair")
+        self.assertEqual(result["targets"], ["hosts"])
+        self.assertEqual(result["reasons"], [])
+        self.assertEqual(self.calls, [])
 
     def test_drift_never_escalates(self):
         self.settle()

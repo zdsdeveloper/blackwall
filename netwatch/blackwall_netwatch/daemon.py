@@ -22,6 +22,12 @@ from . import (blocklist, hosts, integrity, ladder, ledger, provenance,
 # and needing a root shell to repair.
 MAX_DOMAINS = 50000
 
+# How recently a breach must have been recorded for the start grace to be
+# considered already spent. The grace is for a daemon coming up in the middle
+# of a package transaction, not for a daemon coming up for the fifth time in a
+# minute with a weakening still standing behind it.
+GRACE_DENIED_AFTER_BREACH_SECONDS = 10 * 60
+
 # How long a sanctioned window outlives the transaction behind it. pacman drops
 # db.lck and exits before the daemon's next cycle notices, and a PostTransaction
 # repair that did not land needs somewhere to land: without this grace the tail
@@ -79,11 +85,17 @@ class NetWatch:
         self.flusher = flusher
         self.proc_dir = proc_dir
         self.notifier = notifier
-        # The grace for the cycle that runs as the daemon comes up. A restart
-        # in the middle of a package transaction finds the managed files
-        # part-written and used to read that as a pair of hands; in Phase 2
-        # reading it that way is a locked screen for rebooting. The first
-        # cycle records what it finds and escalates nothing.
+        # Half of the grace for the cycle that runs as the daemon comes up. A
+        # restart in the middle of a package transaction finds the managed
+        # files part-written and used to read that as a pair of hands; in
+        # Phase 2 reading it that way is a locked screen for rebooting. The
+        # first cycle records what it finds and escalates nothing.
+        #
+        # Only half, because this half lives in memory and a restart mints a
+        # fresh one. `systemctl kill` is not a stop job, Restart=always brings
+        # the daemon straight back, and a loop of that would hand out a free
+        # pass every few seconds while breaches piled up. The other half is
+        # _start_grace_available, which asks the ledger.
         self._first_enforcement = True
         # What was missing on the previous cycle. A weakening the repair loop
         # cannot undo -- a masked unit, above all -- is still there next cycle
@@ -160,14 +172,20 @@ class NetWatch:
         # the day, whenever that comes.
         first = self._first_enforcement
         self._first_enforcement = False
-        standing = reasons == self._last_reasons
+        # Subset, not equality. A reason set that has only shrunk is the same
+        # standing weakening with one of its parts repaired, not a new one:
+        # equality would file a second breach for the leftover the moment the
+        # repairable half went away, and that second entry raises the rung for
+        # the whole of the ladder's window.
+        standing = (self._last_reasons is not None
+                    and set(reasons) <= set(self._last_reasons))
         self._last_reasons = reasons
         if not targets and (not reasons or standing):
             # Nothing was repaired, and nothing is missing that was not already
             # missing and already recorded last cycle. The second half is what
-            # keeps a weakening outside the repair loop's reach -- a masked
-            # unit -- from being filed afresh on every cycle for as long as it
-            # stands.
+            # keeps a weakening outside the repair loop's reach -- a unit that
+            # is no longer the one we installed -- from being filed afresh on
+            # every cycle for as long as it stands.
             #
             # The add() excuse is consumed here too. The flag is spent by the
             # enforcement it was raised for whether or not that enforcement
@@ -175,12 +193,18 @@ class NetWatch:
             # NEXT hand edit as our own work, which is a hole in the wall.
             self._applied_pending = False
             return {"changed": False, "verdict": None, "targets": []}
+        # Read once and used twice, for the grace and for whether this machine
+        # has ever been in a good state. _escalate reads it again, but only
+        # after the entry below has landed: the rung has to count the breach
+        # being escalated.
+        entries = ledger.read(self.paths.ledger)
+        first = first and self._start_grace_available(entries)
         # Consumed unconditionally, whatever verdict wins below: a flag left
         # set outlives the enforcement it was raised for, and the next hand
         # edit would be excused as our own work -- a hole in the wall.
         applied = self._applied_pending
         self._applied_pending = False
-        if not self._enforced_before():
+        if not self._enforced_before(entries):
             # A machine that has never been enforced is being installed, and an
             # install is an install even when an add is what triggered it.
             verdict = "init"
@@ -222,14 +246,45 @@ class NetWatch:
             # the plugin picks it up when it next starts.
             pass
 
-    def _enforced_before(self):
+    def _enforced_before(self, entries=None):
         # The ledger is the record of whether this machine has ever been in a
         # good state. It is append-only and root-owned, so answering this
         # question dishonestly costs more than the answer is worth.
+        if entries is None:
+            entries = ledger.read(self.paths.ledger)
         return any(
             e.get("kind") in ("init", "applied", "drift", "breach")
-            for e in ledger.read(self.paths.ledger)
+            for e in entries
         )
+
+    def _start_grace_available(self, entries, now=None):
+        """Is the first-cycle grace still honest?
+
+        The grace exists so a daemon coming up in the middle of a package
+        transaction does not read part-written files as a pair of hands. It is
+        not meant to survive a restart loop: a breach recorded minutes ago is a
+        weakening that is still standing, and handing a fresh free pass to
+        every restart would hold the ladder at zero for as long as the restarts
+        kept coming.
+
+        A legitimate mid-transaction restart still has its grace. What it has
+        on the record is drift or applied, not a breach.
+        """
+        now = time.time() if now is None else now
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("kind") != "breach":
+                continue
+            at = entry.get("at")
+            # bool is an int in Python, and a True here would read as an
+            # ancient timestamp rather than the malformed entry it is.
+            if isinstance(at, bool) or not isinstance(at, (int, float)):
+                continue
+            # Both ends, as the ladder does it: a future-dated entry gives a
+            # negative age, and an upper bound alone would let one deny the
+            # grace for ever.
+            if 0 <= now - at <= GRACE_DENIED_AFTER_BREACH_SECONDS:
+                return False
+        return True
 
     def _reap_dead_window(self):
         """Keep the sanctioned transaction window honest.
