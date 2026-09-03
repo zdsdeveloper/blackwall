@@ -40,8 +40,18 @@ install -m 0644 "$here/units/blackwall-netwatch.service" \
   /usr/local/lib/blackwall-netwatch/blackwall-netwatch.service
 
 install -d -m 0755 /var/lib/blackwall
-touch /var/lib/blackwall/blocklist
-chmod 0644 /var/lib/blackwall/blocklist
+
+# Created only if it is not already there. Once the blocklist is append-only,
+# chmod on it returns EPERM -- the same kernel restriction the ledger's fchmod
+# is guarded against -- so an unconditional chmod fails on exactly the armed
+# system the installer most needs to work on, and under `set -e` takes the rest
+# of the install down with it: the code lands, the daemon is never restarted,
+# and the update looks applied while the old process keeps serving. Updating
+# mtime is still permitted, which is why `touch` succeeds and hides it.
+if [[ ! -e /var/lib/blackwall/blocklist ]]; then
+  touch /var/lib/blackwall/blocklist
+  chmod 0644 /var/lib/blackwall/blocklist
+fi
 
 systemctl daemon-reload
 systemctl enable blackwall-netwatch.service
