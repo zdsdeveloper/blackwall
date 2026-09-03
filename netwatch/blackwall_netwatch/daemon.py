@@ -188,7 +188,6 @@ class NetWatch:
         # the whole of the ladder's window.
         standing = (self._last_reasons is not None
                     and set(reasons) <= set(self._last_reasons))
-        self._last_reasons = reasons
         if not targets and (not reasons or standing):
             # Nothing was repaired, and nothing is missing that was not already
             # missing and already recorded last cycle. The second half is what
@@ -201,6 +200,10 @@ class NetWatch:
             # found anything to do; left set past an empty cycle it excuses the
             # NEXT hand edit as our own work, which is a hole in the wall.
             self._applied_pending = False
+            # Kept current even on a quiet cycle. A wall that has gone back to
+            # intact must clear this, or a weakening repaired and then repeated
+            # would read as the same one still standing and never be filed.
+            self._last_reasons = reasons
             # Every cycle, not only the ones that found something. A breach
             # recorded while nobody was logged in is still waiting to be shown,
             # and the quiet cycle after the wall was repaired is exactly when a
@@ -251,6 +254,19 @@ class NetWatch:
             recorded = "graced"
         ledger.record(self.paths.ledger, recorded,
                       targets=targets, reasons=reasons)
+        # The grace defers; it does not forgive. Leaving _last_reasons alone on
+        # a graced cycle is what lets the NEXT cycle look at the same weakening
+        # afresh and file it as a real breach -- which is the whole difference
+        # between a package transaction that was half-written when we came up
+        # (gone by the next cycle, so nothing is filed) and a masked unit that
+        # was already in place (still there, so it is filed and shown).
+        #
+        # Without this, a weakening that existed before the daemon started was
+        # recorded once, never delivered, and then suppressed as standing for
+        # ever: silently tolerated, and counted against the operator without
+        # ever being put in front of them.
+        if recorded != "graced":
+            self._last_reasons = reasons
         self._deliver_pending()
         return {"changed": bool(targets), "verdict": verdict,
                 "targets": targets, "reasons": reasons}
@@ -330,7 +346,10 @@ class NetWatch:
         for entry in reversed(entries):
             if not isinstance(entry, dict):
                 continue
-            if entry.get("kind") not in ("breach", "graced"):
+            # Breaches only. A graced start is the deferral of a filing,
+            # not the filing itself -- seeding from one would suppress
+            # the very breach the next cycle is supposed to make.
+            if entry.get("kind") != "breach":
                 continue
             reasons = entry.get("reasons")
             return reasons if isinstance(reasons, list) else []
@@ -445,7 +464,7 @@ class NetWatch:
             # .get, matching _enforced_before: a truncated or hand-written
             # ledger line without a "kind" must not take status down with it.
             "breaches": len([e for e in entries
-                             if e.get("kind") in ("breach", "graced")]),
+                             if e.get("kind") == "breach"]),
             "enforce_failures": self.enforce_failures,
             "unacknowledged": ladder.unacknowledged(entries),
             "weakened": integrity.weakened(

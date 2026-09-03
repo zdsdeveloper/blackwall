@@ -52,26 +52,28 @@ class TestUnacknowledged(unittest.TestCase):
 
 
 class TestGracedStarts(unittest.TestCase):
-    """A graced start is on the ladder but not on the screen.
+    """A graced start is a deferral, not a verdict.
 
-    Two properties, deliberately pinned apart so a later change cannot collapse
-    them back into one: the grace decides whether a weakening is shown, never
-    whether it counts.
+    It is neither counted nor shown. The daemon files one when it comes up and
+    finds a weakening it cannot yet tell apart from a package transaction that
+    was mid-flight; if the weakening is still there on the next cycle it is
+    filed as a real breach and delivered. Counting the graced start as well
+    would file one act of tampering twice and reach the lock on the first.
     """
 
-    def test_a_graced_start_counts_toward_the_rung(self):
-        # The grace buys silence about a weakening, not forgiveness for it. The
-        # operator chose this explicitly, including that it can mean a lock with
-        # no challenge shown first.
+    def test_a_graced_start_does_not_count_toward_the_rung(self):
+        # It is always followed by a real breach if the weakening persists, and
+        # by nothing at all if it does not. Counting it here would double-file.
         entries = [e("graced", NOW - 60), e("breach", NOW)]
+        self.assertEqual(ladder.rung(entries, now=NOW), ladder.CHALLENGE)
+
+    def test_a_graced_start_alone_counts_for_nothing(self):
+        self.assertEqual(ladder.unacknowledged([e("graced", NOW)], now=NOW), 0)
+
+    def test_two_real_breaches_still_reach_the_lock_around_one(self):
+        # The graced start must not dilute a genuine pair either.
+        entries = [e("breach", NOW - 90), e("graced", NOW - 60), e("breach", NOW)]
         self.assertEqual(ladder.rung(entries, now=NOW), ladder.LOCK)
-
-    def test_a_graced_start_alone_is_one_not_two(self):
-        self.assertEqual(ladder.unacknowledged([e("graced", NOW)], now=NOW), 1)
-
-    def test_an_ack_clears_a_graced_start_too(self):
-        entries = [e("graced", NOW - 60), {"kind": "ack", "at": NOW}]
-        self.assertEqual(ladder.unacknowledged(entries, now=NOW), 0)
 
     def test_a_graced_start_is_never_delivered(self):
         # The other half, and the reason the kind exists at all: a daemon

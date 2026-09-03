@@ -42,7 +42,10 @@ def unacknowledged(entries, now=None, window=WINDOW_SECONDS):
         if kind == "ack":
             count = 0
             continue
-        if kind not in ("breach", "graced"):
+        # Only a real breach. A graced start is deferred, not forgiven:
+        # if the weakening is still there next cycle it is filed as a
+        # breach and shown, and counting both would file one act twice.
+        if kind != "breach":
             continue
         at = entry.get("at")
         # bool is an int in Python, and a True here would read as an ancient

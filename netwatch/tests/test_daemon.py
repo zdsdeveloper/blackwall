@@ -221,16 +221,15 @@ class TestNetWatch(unittest.TestCase):
             f.write(json.dumps({"at": 2, "kind": "breach"}) + "\n")
         self.assertEqual(self.nw.status()["breaches"], 1)
 
-    def test_status_counts_a_graced_start_as_a_breach(self):
-        # The grace bought silence about a weakening, not a different
-        # classification, and this is the number the operator reads to
-        # understand their own history. Reported as 0 beside an unacked of 1 it
-        # would read as a contradiction.
+    def test_status_does_not_count_a_graced_start(self):
+        # A deferral is not yet a finding. If the weakening is still there next
+        # cycle it is filed as a real breach and counted then; if it has gone,
+        # there was nothing to count. Both numbers agree either way.
         with open(self.paths.ledger, "w") as f:
             f.write(json.dumps({"at": time.time(), "kind": "graced"}) + "\n")
         s = self.nw.status()
-        self.assertEqual(s["breaches"], 1)
-        self.assertEqual(s["unacknowledged"], 1)
+        self.assertEqual(s["breaches"], 0)
+        self.assertEqual(s["unacknowledged"], 0)
 
     def test_adding_a_domain_is_never_a_breach(self):
         # An add changes the blocklist, so the enforcement it triggers finds the
@@ -488,6 +487,34 @@ class TestWeakeningAndLadder(unittest.TestCase):
         return [e for e in ledger.read(self.paths.ledger)
                 if e.get("kind") in ("breach", "graced")]
 
+    def test_a_weakening_already_there_at_startup_is_shown_on_the_next_cycle(self):
+        # The grace defers, it does not forgive. A masked unit that was in place
+        # before the daemon came up used to be recorded once, never delivered,
+        # and then suppressed as standing for ever: tolerated in silence.
+        self.settle()
+        self.mask_unit()
+        fresh = self.restarted()
+        fresh.enforce()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.breaches(), [])
+        fresh.enforce()
+        self.assertEqual(len(self.breaches()), 1)
+        self.assertEqual(self.calls[-1][0], "challenge")
+
+    def test_a_weakening_gone_by_the_next_cycle_is_never_shown(self):
+        # The other half, and the reason the grace exists: a daemon coming up
+        # while a package transaction is mid-write finds the managed files
+        # short, repairs them in that same cycle, and must not challenge anyone
+        # over it.
+        self.settle()
+        self.break_hosts()
+        fresh = self.restarted()
+        fresh.enforce()
+        fresh.enforce()
+        fresh.enforce()
+        self.assertEqual(self.breaches(), [])
+        self.assertEqual(self.calls, [])
+
     def test_a_standing_weakening_is_not_recorded_twice_across_a_restart(self):
         # One act of tampering, one count. The memory of what had already been
         # recorded used to die with the process, so a restart filed the same
@@ -730,12 +757,11 @@ class TestWeakeningAndLadder(unittest.TestCase):
         second = self.restarted()
         self.assertEqual(second.enforce()["verdict"], "breach")
         self.assertEqual(len(self.breaches()), 1)
-        # The lock, not a challenge, and that is the whole point: the graced
-        # start was a real weakening and counts toward the rung, so the second
-        # one is the second in the window. Silence about it was all the grace
-        # ever bought -- the operator can be locked without having been shown a
-        # challenge first, which is the consequence they chose.
-        self.assertEqual(self.calls[-1][0], "lock")
+        # A challenge, and shown: the second restart is refused the grace, so
+        # the weakening is filed as a real breach and delivered rather than
+        # deferred again. What the loop cannot do is keep the ladder silent --
+        # which was the whole reason the graced start goes on the record.
+        self.assertEqual(self.calls[-1][0], "challenge")
 
     def test_a_notifier_that_fails_does_not_break_enforcement(self):
         self.settle()
