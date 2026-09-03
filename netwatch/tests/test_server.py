@@ -553,45 +553,47 @@ class TestAck(unittest.TestCase):
         self.nw = NetWatch(self.paths, flusher=lambda: None,
                            notifier=lambda m, a=(): True)
 
+    def _delivered(self, token):
+        """A breach that actually reached a screen -- which is what an ack
+        answers. The token is minted at delivery, so its hash rides on the
+        delivery entry rather than on the breach: a breach recorded with
+        nobody logged in has no token behind it and nothing to acknowledge.
+        """
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"])
+        ledger.record(self.paths.ledger, "delivered", token_hash=_token_hash(token))
+
     def test_ack_records_an_entry(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         reply = handle(self.nw, {"cmd": "ack", "token": "aaa"})
         self.assertTrue(reply["ok"])
         self.assertIn("ack", [e["kind"] for e in ledger.read(self.paths.ledger)])
 
     def test_ack_clears_the_unacknowledged_count(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         self.assertEqual(handle(self.nw, {"cmd": "status"})["unacknowledged"], 1)
         handle(self.nw, {"cmd": "ack", "token": "aaa"})
         self.assertEqual(handle(self.nw, {"cmd": "status"})["unacknowledged"], 0)
 
     def test_ack_needs_no_root(self):
         # The plugin runs as the operator, not as root.
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         self.assertTrue(
             handle(self.nw, {"cmd": "ack", "token": "aaa"}, peer_is_root=False)["ok"])
 
     def test_ack_without_a_token_is_refused(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         self.assertFalse(handle(self.nw, {"cmd": "ack"})["ok"])
 
     def test_ack_with_the_wrong_token_is_refused(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "zzz"})["ok"])
 
     def test_ack_with_the_right_token_is_accepted(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         self.assertTrue(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
 
     def test_a_token_cannot_be_replayed(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         handle(self.nw, {"cmd": "ack", "token": "aaa"})
         self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
 
@@ -599,12 +601,10 @@ class TestAck(unittest.TestCase):
         # The real bypass shape: an ack landing between two breaches clears
         # the count, so the second reads as the first and the lock is never
         # reached. Untokened acks must not do that.
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
+        self._delivered("aaa")
         for _ in range(20):
             handle(self.nw, {"cmd": "ack"})
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("bbb"))
+        self._delivered("bbb")
         entries = ledger.read(self.paths.ledger)
         self.assertEqual(ladder.rung(entries), ladder.LOCK)
 
@@ -612,11 +612,9 @@ class TestAck(unittest.TestCase):
         # The mirror: a genuine ack, with the token the daemon issued, is
         # exactly what the operator earns by answering. It must still work.
         token = "correct horse"
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash(token))
+        self._delivered(token)
         self.assertTrue(handle(self.nw, {"cmd": "ack", "token": token})["ok"])
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("bbb"))
+        self._delivered("bbb")
         entries = ledger.read(self.paths.ledger)
         self.assertEqual(ladder.rung(entries), ladder.CHALLENGE)
 
@@ -647,9 +645,8 @@ class TestAck(unittest.TestCase):
         self.assertNotIn(token.encode("utf-8"), raw)
 
     def test_a_token_read_from_the_ledger_is_useless(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"],
-                      token_hash=_token_hash("aaa"))
-        leaked = ladder.pending_token_hash(ledger.read(self.paths.ledger))
+        self._delivered("aaa")
+        leaked = ladder.pending_delivery(ledger.read(self.paths.ledger))
         self.assertTrue(leaked)
         self.assertFalse(handle(self.nw, {"cmd": "ack", "token": leaked})["ok"])
 

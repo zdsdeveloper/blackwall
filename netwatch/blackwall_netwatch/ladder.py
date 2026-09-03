@@ -55,11 +55,37 @@ def rung(entries, now=None, window=WINDOW_SECONDS):
     return CHALLENGE if unacknowledged(entries, now, window) <= 1 else LOCK
 
 
-def pending_token_hash(entries):
-    """The hash of the most recent breach nothing has acknowledged.
+def needs_delivery(entries):
+    """Is there a breach that has never reached a screen?
+
+    A breach recorded while nobody was logged in is not a breach the operator
+    has seen, and the ladder must not go on to lock them for a second one they
+    were never warned about.
+
+    A breach that WAS shown and then dismissed is delivered, and does not come
+    back: ignoring rung one is how the operator chooses rung two.
+    """
+    pending = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        if kind == "breach":
+            pending = True
+        elif kind in ("delivered", "ack"):
+            pending = False
+    return pending
+
+
+def pending_delivery(entries):
+    """The hash of the delivery still waiting to be acknowledged.
 
     A hash rather than the token: the ledger is world-readable, and an
     acknowledgement anyone can read out of a file is not an acknowledgement.
+
+    Read off the delivery rather than the breach, because the token is minted
+    when the challenge is actually handed over. A breach recorded with no
+    session up has no token yet -- there was nobody to give one to.
     """
     digest = None
     for entry in entries:
@@ -68,7 +94,7 @@ def pending_token_hash(entries):
         kind = entry.get("kind")
         if kind == "ack":
             digest = None
-        elif kind == "breach":
+        elif kind == "delivered":
             candidate = entry.get("token_hash")
             digest = candidate if isinstance(candidate, str) and candidate else None
     return digest

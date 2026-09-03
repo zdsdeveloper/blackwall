@@ -91,7 +91,8 @@ class NetWatch:
         # restart in the middle of a package transaction finds the managed
         # files part-written and used to read that as a pair of hands; in
         # Phase 2 reading it that way is a locked screen for rebooting. The
-        # first cycle records what it finds and escalates nothing.
+        # first cycle records what it finds as a graced start rather than as a
+        # breach, so the ladder never sees it and nothing is delivered for it.
         #
         # Only half, because this half lives in memory and a restart mints a
         # fresh one. `systemctl kill` is not a stop job, Restart=always brings
@@ -194,11 +195,16 @@ class NetWatch:
             # found anything to do; left set past an empty cycle it excuses the
             # NEXT hand edit as our own work, which is a hole in the wall.
             self._applied_pending = False
+            # Every cycle, not only the ones that found something. A breach
+            # recorded while nobody was logged in is still waiting to be shown,
+            # and the quiet cycle after the wall was repaired is exactly when a
+            # session tends to appear.
+            self._deliver_pending()
             return {"changed": False, "verdict": None, "targets": []}
         # Read once and used twice, for the grace and for whether this machine
-        # has ever been in a good state. _escalate reads it again, but only
-        # after the entry below has landed: the rung has to count the breach
-        # being escalated.
+        # has ever been in a good state. _deliver_pending reads it again, but
+        # only after the entry below has landed: the rung has to count the
+        # breach being delivered.
         entries = ledger.read(self.paths.ledger)
         first = first and self._start_grace_available(entries)
         # Consumed unconditionally, whatever verdict wins below: a flag left
@@ -220,45 +226,88 @@ class NetWatch:
             verdict = provenance.classify(
                 self.paths.window_marker, self.paths.pacman_lock,
                 proc_dir=self.proc_dir)
-        token = secrets.token_hex(16) if verdict == "breach" else None
-        fields = {"targets": targets, "reasons": reasons}
-        if token:
-            # The hash, never the token. The ledger is world-readable by design
-            # -- the operator should be able to read their own history -- and a
-            # token sitting in it would be an acknowledgement anyone could
-            # present without ever having been shown a challenge.
-            fields["token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        ledger.record(self.paths.ledger, verdict, **fields)
-        if verdict == "breach" and not first:
-            self._escalate(reasons, token)
+        recorded = verdict
+        if verdict == "breach" and first:
+            # The start grace, spent on the record rather than on the notice.
+            # Delivery no longer belongs to the cycle that recorded the breach
+            # -- an undelivered breach is handed over whenever a session next
+            # appears -- so a breach recorded here would reach the screen one
+            # cycle later and the grace would be worth thirty seconds. The
+            # grace exists so a daemon coming up in the middle of a package
+            # transaction does not read part-written files as a pair of hands,
+            # and that means the ladder must not learn about this cycle at all.
+            #
+            # Recorded under its own kind rather than dropped: the restart-loop
+            # defence below asks the ledger what the last start found, and a
+            # cycle that left no trace would hand a fresh free pass to every
+            # restart for as long as they kept coming. The verdict returned to
+            # the caller is still the honest one.
+            recorded = "graced"
+        ledger.record(self.paths.ledger, recorded,
+                      targets=targets, reasons=reasons)
+        self._deliver_pending()
         return {"changed": bool(targets), "verdict": verdict,
                 "targets": targets, "reasons": reasons}
 
-    def _escalate(self, reasons, token):
-        """Fire the ladder for a breach just recorded.
+    def _deliver_pending(self):
+        """Hand an undelivered breach to the session, if there is one now.
 
-        Only for a NEW breach: a standing one must not re-fire every cycle, or
-        an unanswered challenge reappears every thirty seconds until the
-        operator kills the shell to stop it -- which teaches them that killing
-        the shell is how you deal with the Blackwall.
+        Delivery rather than firing: a breach recorded with no session up has
+        not been seen, and must still be shown when one appears. Otherwise
+        killing the shell before weakening the wall skips rung one entirely --
+        the breach counts, nothing is ever shown, and the next weakening lands
+        on the lock with nothing to explain it.
 
-        The token is the one just minted for this breach in enforce(), carried
-        to the plugin over the session IPC -- root to plugin, never through the
-        0666 socket -- so a matching ack proves the operator actually saw it.
+        A breach that WAS shown and then dismissed is delivered, and does not
+        come back -- ignoring rung one is how the operator chooses rung two.
+
+        The token is minted here, at the moment it is actually handed over, and
+        carried to the plugin over the session IPC -- root to plugin, never
+        through the 0666 socket -- so a matching ack proves the operator really
+        saw it. Minting it here rather than when the breach was recorded is
+        what lets a delivery deferred across a daemon restart carry one at all.
         """
         entries = ledger.read(self.paths.ledger)
+        if not ladder.needs_delivery(entries):
+            return
+        token = secrets.token_hex(16)
+        # The hash, never the token. The ledger is world-readable by design --
+        # the operator should be able to read their own history -- and a token
+        # sitting in it would be an acknowledgement anyone could present
+        # without ever having been shown a challenge.
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         step = ladder.rung(entries)
         try:
             if step == ladder.LOCK:
-                self.notifier("lock", [str(ladder.LOCK_SECONDS), token])
+                landed = self.notifier("lock", [str(ladder.LOCK_SECONDS), token])
             else:
-                self.notifier("challenge",
-                              [reasons[0] if reasons else "breach", token])
+                landed = self.notifier("challenge", [self._last_reason(entries), token])
         except Exception:
             # No session, no shell, no screen to lock. That is an ordinary
-            # outcome rather than an error: the breach stays unacknowledged and
-            # the plugin picks it up when it next starts.
-            pass
+            # outcome rather than an error: the breach stays undelivered and is
+            # handed over on the first cycle that finds a session.
+            landed = False
+        if landed:
+            ledger.record(self.paths.ledger, "delivered", token_hash=digest)
+
+    def _last_reason(self, entries):
+        """What to put in front of the operator for the breach being delivered.
+
+        The newest breach's first reason, because that is the one being
+        delivered. A breach whose entry did not survive intact still has to say
+        something: a challenge with no words on it is a challenge the operator
+        cannot act on.
+        """
+        reason = None
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("kind") != "breach":
+                continue
+            reasons = entry.get("reasons")
+            reason = (reasons[0]
+                      if isinstance(reasons, list) and reasons
+                      and isinstance(reasons[0], str) and reasons[0]
+                      else None)
+        return reason or "the wall was weakened"
 
     def _enforced_before(self, entries=None):
         # The ledger is the record of whether this machine has ever been in a
@@ -283,10 +332,19 @@ class NetWatch:
 
         A legitimate mid-transaction restart still has its grace. What it has
         on the record is drift or applied, not a breach.
+
+        A graced start counts alongside a breach, and has to: the grace is what
+        stops that cycle recording one, so without this a daemon killed inside
+        its first cycle over and over would be handed a fresh free pass every
+        time and the ladder would never leave the ground. A start is only ever
+        graced when it found a weakening it could not attribute to a package
+        transaction, so a genuine mid-upgrade restart -- which records drift --
+        is not touched by this.
         """
         now = time.time() if now is None else now
         for entry in entries:
-            if not isinstance(entry, dict) or entry.get("kind") != "breach":
+            if (not isinstance(entry, dict)
+                    or entry.get("kind") not in ("breach", "graced")):
                 continue
             at = entry.get("at")
             # bool is an int in Python, and a True here would read as an

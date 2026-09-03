@@ -51,12 +51,16 @@ def handle(nw, request, peer_is_root=False):
         return {"ok": True, "result": result}
     if cmd == "ack":
         # Unprivileged by design -- the plugin runs as the operator -- but not
-        # unauthenticated. The token was delivered to the plugin over the
-        # session IPC, which a process spamming this socket cannot read. Only
-        # its hash lives in the ledger, which is world-readable, so reading
-        # the ledger yields nothing that can be presented back here.
+        # unauthenticated. The token was handed to the plugin over the session
+        # IPC, which a process spamming this socket cannot read. Only its hash
+        # lives in the ledger, which is world-readable, so reading the ledger
+        # yields nothing that can be presented back here.
+        #
+        # Answered against the delivery rather than the breach: a breach that
+        # never reached a screen has no token behind it, and there is nothing
+        # for anyone to acknowledge until it does.
         token = request.get("token")
-        expected = ladder.pending_token_hash(ledger.read(nw.paths.ledger))
+        expected = ladder.pending_delivery(ledger.read(nw.paths.ledger))
         if not expected or not isinstance(token, str) or not token:
             return {"ok": False, "error": "no acknowledgement is pending"}
         offered = hashlib.sha256(token.encode("utf-8")).hexdigest()

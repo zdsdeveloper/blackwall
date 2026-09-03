@@ -432,8 +432,14 @@ class TestWeakeningAndLadder(unittest.TestCase):
                 f.write("[Service]\n")
         self.calls = []
         self.nw = NetWatch(self.paths, flusher=lambda: None,
-                           proc_dir=self.empty_proc(),
-                           notifier=lambda m, a=(): self.calls.append((m, list(a))) or True)
+                           proc_dir=self.empty_proc(), notifier=self.recorder)
+
+    def recorder(self, method, args=()):
+        """A session that is up. Injected, always: the real notifier reaches
+        the live session over the real /proc, and a delivery from a test would
+        lock the screen of whoever is sitting at the machine running it."""
+        self.calls.append((method, list(args)))
+        return True
 
     def empty_proc(self):
         p = os.path.join(self.dir, "proc")
@@ -452,7 +458,7 @@ class TestWeakeningAndLadder(unittest.TestCase):
         """A second NetWatch over the same paths, as a restart leaves one."""
         return NetWatch(
             self.paths, flusher=lambda: None, proc_dir=self.empty_proc(),
-            notifier=lambda m, a=(): self.calls.append((m, list(a))) or True)
+            notifier=self.recorder)
 
     def break_hosts(self):
         with open(self.paths.hosts, "w") as f:
@@ -510,8 +516,8 @@ class TestWeakeningAndLadder(unittest.TestCase):
         self.settle()
         with open(self.paths.hosts, "w") as f:
             f.write("127.0.0.1 localhost\n")
-        fresh = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.empty_proc(),
-                         notifier=lambda m, a=(): self.calls.append((m, list(a))) or True)
+        fresh = NetWatch(self.paths, flusher=lambda: None,
+                         proc_dir=self.empty_proc(), notifier=self.recorder)
         fresh.enforce()
         self.assertEqual(self.calls, [])
 
@@ -630,6 +636,61 @@ class TestWeakeningAndLadder(unittest.TestCase):
             f.write("127.0.0.1 localhost\n")
         self.assertEqual(self.nw.enforce()["verdict"], "drift")
         self.assertEqual(self.calls, [])
+
+    def test_a_breach_with_no_session_is_delivered_when_one_appears(self):
+        # Killing the shell before tampering must not skip rung one.
+        self.settle()
+        self.nw.notifier = lambda m, a=(): False      # nobody logged in
+        self.break_hosts()
+        self.nw.enforce()
+        self.assertEqual(self.calls, [])
+        self.nw.notifier = self.recorder              # a session appears
+        self.nw.enforce()
+        self.assertEqual(self.calls[-1][0], "challenge")
+        # And it says what was weakened, not just that something was.
+        self.assertTrue(self.calls[-1][1][0])
+        self.assertTrue(self.calls[-1][1][1])
+
+    def test_a_delivered_breach_is_not_delivered_twice(self):
+        # Delivery is once per breach, not once per cycle: a challenge that
+        # reappeared every thirty seconds would teach the operator that killing
+        # the shell is how you deal with the Blackwall.
+        self.settle()
+        self.break_hosts()
+        self.nw.enforce()
+        self.assertEqual([m for m, _ in self.calls], ["challenge"])
+        for _ in range(3):
+            self.nw.enforce()
+        self.assertEqual([m for m, _ in self.calls], ["challenge"])
+
+    def test_a_dismissed_challenge_does_not_come_back(self):
+        # Delivered but unacknowledged: the breach stands and the next one
+        # locks. Ignoring rung one is how the operator chooses rung two.
+        self.settle()
+        self.break_hosts()
+        self.nw.enforce()
+        self.nw.enforce()                      # dismissed: no ack on the record
+        self.assertEqual([m for m, _ in self.calls], ["challenge"])
+        self.break_hosts()
+        self.assertEqual(self.nw.enforce()["verdict"], "breach")
+        self.assertEqual(self.calls[-1][0], "lock")
+
+    def test_a_restart_loop_cannot_keep_minting_the_start_grace(self):
+        # The graced start goes on the record precisely so the next one can see
+        # it. Were it to leave no trace, a daemon killed inside its first cycle
+        # over and over would be handed a fresh free pass every time and the
+        # ladder would never leave the ground.
+        self.settle()
+        self.break_hosts()
+        first = self.restarted()
+        self.assertEqual(first.enforce()["verdict"], "breach")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.breaches(), [])
+        self.break_hosts()
+        second = self.restarted()
+        self.assertEqual(second.enforce()["verdict"], "breach")
+        self.assertEqual(self.calls[-1][0], "challenge")
+        self.assertEqual(len(self.breaches()), 1)
 
     def test_a_notifier_that_fails_does_not_break_enforcement(self):
         self.settle()

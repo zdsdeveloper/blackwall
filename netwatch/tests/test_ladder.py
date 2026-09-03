@@ -77,33 +77,51 @@ class TestRung(unittest.TestCase):
         self.assertEqual(ladder.rung(entries, now=NOW), ladder.CHALLENGE)
 
 
-class TestPendingTokenHash(unittest.TestCase):
-    def test_none_when_no_breach(self):
-        self.assertIsNone(ladder.pending_token_hash([]))
+class TestDelivery(unittest.TestCase):
+    def test_a_breach_with_no_delivery_needs_one(self):
+        self.assertTrue(ladder.needs_delivery([e("breach", NOW)]))
 
-    def test_the_hash_of_the_latest_unacknowledged_breach(self):
-        entries = [{"kind": "breach", "at": NOW - 10, "token_hash": "aaa"},
-                   {"kind": "breach", "at": NOW, "token_hash": "bbb"}]
-        self.assertEqual(ladder.pending_token_hash(entries), "bbb")
+    def test_a_delivered_breach_does_not_need_another(self):
+        entries = [e("breach", NOW - 10),
+                   {"kind": "delivered", "at": NOW, "token_hash": "aa"}]
+        self.assertFalse(ladder.needs_delivery(entries))
 
-    def test_none_once_acknowledged(self):
-        entries = [{"kind": "breach", "at": NOW - 10, "token_hash": "aaa"},
-                   {"kind": "ack", "at": NOW, "token_hash": "aaa"}]
-        self.assertIsNone(ladder.pending_token_hash(entries))
+    def test_a_new_breach_after_a_delivery_needs_one(self):
+        entries = [e("breach", NOW - 20),
+                   {"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   e("breach", NOW)]
+        self.assertTrue(ladder.needs_delivery(entries))
 
-    def test_a_breach_after_an_ack_is_pending_again(self):
-        entries = [{"kind": "breach", "at": NOW - 20, "token_hash": "aaa"},
-                   {"kind": "ack", "at": NOW - 10, "token_hash": "aaa"},
-                   {"kind": "breach", "at": NOW, "token_hash": "ccc"}]
-        self.assertEqual(ladder.pending_token_hash(entries), "ccc")
+    def test_nothing_pending_needs_nothing(self):
+        self.assertFalse(ladder.needs_delivery([]))
+        self.assertFalse(ladder.needs_delivery([e("drift", NOW)]))
 
-    def test_a_breach_without_a_token_hash_yields_none(self):
-        # Breaches recorded before this task carry no hash; they cannot be
-        # acknowledged, and must not crash the lookup either.
-        self.assertIsNone(ladder.pending_token_hash([{"kind": "breach", "at": NOW}]))
+    def test_an_acknowledged_breach_needs_nothing(self):
+        entries = [e("breach", NOW - 20),
+                   {"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "ack", "at": NOW, "token_hash": "aa"}]
+        self.assertFalse(ladder.needs_delivery(entries))
+
+    def test_pending_delivery_is_the_latest_undelivered_hash(self):
+        entries = [{"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "delivered", "at": NOW, "token_hash": "bb"}]
+        self.assertEqual(ladder.pending_delivery(entries), "bb")
+
+    def test_pending_delivery_is_cleared_by_an_ack(self):
+        entries = [{"kind": "delivered", "at": NOW - 10, "token_hash": "aa"},
+                   {"kind": "ack", "at": NOW, "token_hash": "aa"}]
+        self.assertIsNone(ladder.pending_delivery(entries))
+
+    def test_a_delivery_without_a_token_hash_yields_none(self):
+        # Nothing can be presented against it, and it must not crash the
+        # lookup either.
+        self.assertIsNone(ladder.pending_delivery([{"kind": "delivered", "at": NOW}]))
 
     def test_a_non_dict_entry_is_skipped(self):
-        self.assertIsNone(ladder.pending_token_hash(["junk", 3, None]))
+        # A truncated or hand-written ledger line must not take either lookup
+        # down with it.
+        self.assertIsNone(ladder.pending_delivery(["junk", 3, None]))
+        self.assertFalse(ladder.needs_delivery(["junk", 3, None]))
 
 
 if __name__ == "__main__":
