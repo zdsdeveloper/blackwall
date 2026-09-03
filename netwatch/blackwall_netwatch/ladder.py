@@ -53,3 +53,24 @@ def unacknowledged(entries, now=None, window=WINDOW_SECONDS):
 def rung(entries, now=None, window=WINDOW_SECONDS):
     """CHALLENGE for the first unacknowledged breach in the window, LOCK after."""
     return CHALLENGE if unacknowledged(entries, now, window) <= 1 else LOCK
+
+
+def pending_token(entries):
+    """The token of the most recent breach nothing has acknowledged.
+
+    None means there is nothing to acknowledge, and an ack presenting any token
+    at all must be refused. That is the whole point: without this an ack is a
+    bare socket write on a world-writable socket, and a shell loop could hold
+    the ladder below the lock rung for ever.
+    """
+    token = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        if kind == "ack":
+            token = None
+        elif kind == "breach":
+            candidate = entry.get("token")
+            token = candidate if isinstance(candidate, str) and candidate else None
+    return token

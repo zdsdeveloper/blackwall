@@ -480,7 +480,13 @@ class TestWeakeningAndLadder(unittest.TestCase):
             f.write("127.0.0.1 localhost\n")
         result = self.nw.enforce()
         self.assertEqual(result["verdict"], "breach")
-        self.assertEqual(self.calls, [("challenge", [result["reasons"][0]])])
+        self.assertEqual(len(self.calls), 1)
+        method, args = self.calls[0]
+        self.assertEqual(method, "challenge")
+        self.assertEqual(args[0], result["reasons"][0])
+        # A token, present and non-empty: the ack that answers this challenge
+        # has to prove it, not just claim it.
+        self.assertTrue(args[1])
 
     def test_a_second_breach_locks(self):
         self.settle()
@@ -488,8 +494,9 @@ class TestWeakeningAndLadder(unittest.TestCase):
             with open(self.paths.hosts, "w") as f:
                 f.write("127.0.0.1 localhost\n")
             self.nw.enforce()
-        self.assertEqual(self.calls[-1][0], "engage")
-        self.assertEqual(self.calls[-1][1], [str(ladder.LOCK_SECONDS)])
+        self.assertEqual(self.calls[-1][0], "lock")
+        self.assertEqual(self.calls[-1][1][0], str(ladder.LOCK_SECONDS))
+        self.assertTrue(self.calls[-1][1][1])
 
     def test_a_masked_unit_is_a_breach(self):
         self.settle()
@@ -567,7 +574,7 @@ class TestWeakeningAndLadder(unittest.TestCase):
         self.assertEqual([m for m, _ in self.calls], ["challenge"])
         self.break_hosts()
         self.assertEqual(self.nw.enforce()["verdict"], "breach")
-        self.assertEqual(self.calls[-1][0], "engage")
+        self.assertEqual(self.calls[-1][0], "lock")
         self.assertEqual(len(self.breaches()), 2)
 
     def test_a_restart_cannot_mint_a_fresh_grace_after_a_recent_breach(self):
@@ -582,7 +589,7 @@ class TestWeakeningAndLadder(unittest.TestCase):
         restarted = self.restarted()
         self.break_hosts()
         self.assertEqual(restarted.enforce()["verdict"], "breach")
-        self.assertEqual(self.calls[-1][0], "engage")
+        self.assertEqual(self.calls[-1][0], "lock")
 
     def test_a_restart_still_gets_the_grace_when_no_breach_is_recent(self):
         # The case the grace exists for. A daemon coming up in the middle of a

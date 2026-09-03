@@ -12,7 +12,7 @@ import socket
 import struct
 import time
 
-from . import ledger
+from . import ladder, ledger
 from .blocklist import InvalidDomain
 from .daemon import BlocklistFull
 
@@ -48,10 +48,14 @@ def handle(nw, request, peer_is_root=False):
             nw.close_window()
         return {"ok": True, "result": result}
     if cmd == "ack":
-        # Deliberately unprivileged: the plugin runs as the operator. All this
-        # can do is clear a count, which only ever makes the next breach
-        # cheaper by one rung -- and the breach itself is already recorded.
-        ledger.record(nw.paths.ledger, "ack")
+        # Unprivileged by design -- the plugin runs as the operator -- but not
+        # unauthenticated. The token was delivered to the plugin over the
+        # session IPC, which a process spamming this socket cannot read.
+        token = request.get("token")
+        expected = ladder.pending_token(ledger.read(nw.paths.ledger))
+        if not expected or token != expected:
+            return {"ok": False, "error": "no acknowledgement is pending"}
+        ledger.record(nw.paths.ledger, "ack", token=token)
         return {"ok": True}
     return {"ok": False, "error": "unknown command: %r" % (cmd,)}
 

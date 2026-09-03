@@ -8,6 +8,7 @@ race to lose.
 
 import dataclasses
 import os
+import secrets
 import subprocess
 import time
 
@@ -218,28 +219,36 @@ class NetWatch:
             verdict = provenance.classify(
                 self.paths.window_marker, self.paths.pacman_lock,
                 proc_dir=self.proc_dir)
-        ledger.record(self.paths.ledger, verdict, targets=targets,
-                      reasons=reasons)
+        token = secrets.token_hex(4) if verdict == "breach" else None
+        fields = {"targets": targets, "reasons": reasons}
+        if token:
+            fields["token"] = token
+        ledger.record(self.paths.ledger, verdict, **fields)
         if verdict == "breach" and not first:
-            self._escalate(reasons)
+            self._escalate(reasons, token)
         return {"changed": bool(targets), "verdict": verdict,
                 "targets": targets, "reasons": reasons}
 
-    def _escalate(self, reasons):
+    def _escalate(self, reasons, token):
         """Fire the ladder for a breach just recorded.
 
         Only for a NEW breach: a standing one must not re-fire every cycle, or
         an unanswered challenge reappears every thirty seconds until the
         operator kills the shell to stop it -- which teaches them that killing
         the shell is how you deal with the Blackwall.
+
+        The token is the one just minted for this breach in enforce(), carried
+        to the plugin over the session IPC -- root to plugin, never through the
+        0666 socket -- so a matching ack proves the operator actually saw it.
         """
         entries = ledger.read(self.paths.ledger)
         step = ladder.rung(entries)
         try:
             if step == ladder.LOCK:
-                self.notifier("engage", [str(ladder.LOCK_SECONDS)])
+                self.notifier("lock", [str(ladder.LOCK_SECONDS), token])
             else:
-                self.notifier("challenge", [reasons[0] if reasons else "breach"])
+                self.notifier("challenge",
+                              [reasons[0] if reasons else "breach", token])
         except Exception:
             # No session, no shell, no screen to lock. That is an ordinary
             # outcome rather than an error: the breach stays unacknowledged and

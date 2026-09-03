@@ -6,7 +6,7 @@ import time
 import unittest
 from blackwall_netwatch.daemon import NetWatch, Paths
 from blackwall_netwatch.server import handle
-from blackwall_netwatch import daemon, ledger, server
+from blackwall_netwatch import daemon, ladder, ledger, server
 
 
 UNIT = "[Service]\nExecStart=/usr/local/bin/blackwall-netwatch\n"
@@ -549,19 +549,48 @@ class TestAck(unittest.TestCase):
                            notifier=lambda m, a=(): True)
 
     def test_ack_records_an_entry(self):
-        reply = handle(self.nw, {"cmd": "ack"})
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        reply = handle(self.nw, {"cmd": "ack", "token": "aaa"})
         self.assertTrue(reply["ok"])
         self.assertIn("ack", [e["kind"] for e in ledger.read(self.paths.ledger)])
 
     def test_ack_clears_the_unacknowledged_count(self):
-        ledger.record(self.paths.ledger, "breach", targets=["hosts"])
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
         self.assertEqual(handle(self.nw, {"cmd": "status"})["unacknowledged"], 1)
-        handle(self.nw, {"cmd": "ack"})
+        handle(self.nw, {"cmd": "ack", "token": "aaa"})
         self.assertEqual(handle(self.nw, {"cmd": "status"})["unacknowledged"], 0)
 
     def test_ack_needs_no_root(self):
         # The plugin runs as the operator, not as root.
-        self.assertTrue(handle(self.nw, {"cmd": "ack"}, peer_is_root=False)["ok"])
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertTrue(
+            handle(self.nw, {"cmd": "ack", "token": "aaa"}, peer_is_root=False)["ok"])
+
+    def test_ack_without_a_token_is_refused(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertFalse(handle(self.nw, {"cmd": "ack"})["ok"])
+
+    def test_ack_with_the_wrong_token_is_refused(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "zzz"})["ok"])
+
+    def test_ack_with_the_right_token_is_accepted(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        self.assertTrue(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
+
+    def test_a_token_cannot_be_replayed(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        handle(self.nw, {"cmd": "ack", "token": "aaa"})
+        self.assertFalse(handle(self.nw, {"cmd": "ack", "token": "aaa"})["ok"])
+
+    def test_spamming_ack_cannot_hold_the_ladder_down(self):
+        # The bypass this task exists to close: a shell loop with no token.
+        for _ in range(20):
+            handle(self.nw, {"cmd": "ack"})
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="aaa")
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"], token="bbb")
+        entries = ledger.read(self.paths.ledger)
+        self.assertEqual(ladder.rung(entries), ladder.LOCK)
 
     def test_status_reports_weakening(self):
         self.nw.add("a.com")
