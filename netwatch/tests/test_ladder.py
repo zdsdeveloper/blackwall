@@ -32,6 +32,24 @@ class TestUnacknowledged(unittest.TestCase):
     def test_an_entry_without_a_timestamp_is_skipped_not_fatal(self):
         self.assertEqual(ladder.unacknowledged([{"kind": "breach"}], now=NOW), 0)
 
+    def test_a_future_dated_breach_does_not_count(self):
+        # Clock skew and NTP corrections happen. A negative age satisfies an
+        # upper bound alone and would hold the ladder at lock-eligible for ever.
+        self.assertEqual(ladder.unacknowledged([e("breach", NOW + 3600)], now=NOW), 0)
+
+    def test_a_non_dict_entry_is_skipped_not_fatal(self):
+        entries = ["junk", 3, None, e("breach", NOW)]
+        self.assertEqual(ladder.unacknowledged(entries, now=NOW), 1)
+
+    def test_a_boolean_timestamp_is_skipped(self):
+        self.assertEqual(ladder.unacknowledged([{"kind": "breach", "at": True}], now=NOW), 0)
+
+    def test_an_ack_without_a_timestamp_still_clears(self):
+        # An acknowledgement clears what came before it whether or not the entry
+        # carrying it survived intact.
+        entries = [e("breach", NOW - 100), {"kind": "ack"}, e("breach", NOW)]
+        self.assertEqual(ladder.unacknowledged(entries, now=NOW), 1)
+
 
 class TestRung(unittest.TestCase):
     def test_first_breach_challenges(self):
@@ -52,6 +70,10 @@ class TestRung(unittest.TestCase):
 
     def test_a_breach_outside_the_window_does_not_stack(self):
         entries = [e("breach", NOW - ladder.WINDOW_SECONDS - 1), e("breach", NOW)]
+        self.assertEqual(ladder.rung(entries, now=NOW), ladder.CHALLENGE)
+
+    def test_a_future_dated_breach_does_not_stack_into_a_lock(self):
+        entries = [e("breach", NOW + 3600), e("breach", NOW)]
         self.assertEqual(ladder.rung(entries, now=NOW), ladder.CHALLENGE)
 
 
