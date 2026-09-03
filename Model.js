@@ -395,8 +395,14 @@ function parsePointers(raw) {
     var ids = block.match(/I:[^\n]*Vendor=([0-9a-fA-F]{1,4})\s+Product=([0-9a-fA-F]{1,4})/)
     if (!ids) continue
     var name = block.match(/N:\s*Name="([^"]*)"/)
+    // Uniq is the device's own address where it has one -- a Unifying
+    // receiver's pairing address, a Bluetooth MAC. Most devices leave it
+    // blank, which is why it is carried alongside vendor:product rather than
+    // instead of it.
+    var uniq = block.match(/U:\s*Uniq=(\S+)/)
     out.push({
       id: (ids[1] + ":" + ids[2]).toLowerCase(),
+      uniq: uniq ? uniq[1].toLowerCase() : "",
       name: name ? name[1] : ""
     })
   }
@@ -417,10 +423,20 @@ function identifyAgent(pointers, agents) {
       byId[String(key).toLowerCase()] = String(agents[key])
   }
   for (var i = 0; i < pointers.length; i++) {
-    var id = pointers[i] && pointers[i].id
-    if (!id) continue
-    var name = byId[String(id).toLowerCase()]
-    if (name) return name
+    var p = pointers[i]
+    if (!p) continue
+    // Uniq first: vendor:product names a model, and every M720 on earth is
+    // 046d:405e. Uniq names the device. A blank one is skipped rather than
+    // looked up, or three devices with no address between them would all
+    // match a config that happened to carry an empty key.
+    if (p.uniq) {
+      var byUniq = byId[String(p.uniq).toLowerCase()]
+      if (byUniq) return byUniq
+    }
+    if (p.id) {
+      var name = byId[String(p.id).toLowerCase()]
+      if (name) return name
+    }
   }
   return ""
 }

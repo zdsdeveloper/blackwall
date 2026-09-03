@@ -57,8 +57,13 @@ Item {
   property var pointers: []
   property var agents: ({})
   readonly property string agentName: Model.identifyAgent(root.pointers, root.agents)
-  readonly property string agentToken:
-    root.pointers.length > 0 ? String(root.pointers[0].id) : ""
+  // The device's own address where it has one, its model id otherwise --
+  // whichever the match would actually have been made on.
+  readonly property string agentToken: {
+    if (root.pointers.length === 0) return ""
+    var p = root.pointers[0]
+    return String(p.uniq || p.id || "")
+  }
 
   // True while the power-on sequence has the surface.
   property bool booting: false

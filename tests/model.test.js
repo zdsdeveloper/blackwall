@@ -214,6 +214,7 @@ check("censor: a line with no detail is unchanged by it",
 const DEVICES = [
   'I: Bus=0003 Vendor=046d Product=405e Version=0111',
   'N: Name="Logitech M720 Triathlon"',
+  'U: Uniq=18-c3-2d-77',
   'H: Handlers=sysrq kbd leds event5 mouse1 ',
   '',
   'I: Bus=0018 Vendor=06cb Product=ce17 Version=0100',
@@ -263,6 +264,28 @@ check("config: an agents array is treated as none",
       Model.parseConfig('{"agents":[1,2]}').agents, {});
 check("config: a scalar agents field is treated as none",
       Model.parseConfig('{"agents":"zamil"}').agents, {});
+
+// Uniq names the device; vendor:product only names the model, and every
+// M720 on earth carries the same one.
+check("pointers: a device address is carried when there is one",
+      pointers[0].uniq, "18-c3-2d-77");
+check("pointers: a device with no address reports an empty one",
+      pointers[1].uniq, "");
+check("agent: the device address is matched",
+      Model.identifyAgent(pointers, { "18-c3-2d-77": "ZAMIL" }), "ZAMIL");
+check("agent: the address match is case-insensitive",
+      Model.identifyAgent(pointers, { "18-C3-2D-77": "ZAMIL" }), "ZAMIL");
+// The address is the more specific of the two, so it decides.
+check("agent: the address wins over the model id",
+      Model.identifyAgent(pointers, { "18-c3-2d-77": "ZAMIL", "046d:405e": "ANYONE" }),
+      "ZAMIL");
+// The one that would really hurt: three devices here have no address, and an
+// empty key must not sweep all of them in.
+check("agent: an empty config key matches no addressless device",
+      Model.identifyAgent(pointers, { "": "NOBODY" }), "");
+check("agent: an addressless device still matches on its model id",
+      Model.identifyAgent([{ id: "06cb:ce17", uniq: "", name: "Touchpad" }],
+                          { "06cb:ce17": "TOUCHPAD" }), "TOUCHPAD");
 
 // -----------------------------------------------------------------------------
 
