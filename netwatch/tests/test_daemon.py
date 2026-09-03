@@ -689,8 +689,13 @@ class TestWeakeningAndLadder(unittest.TestCase):
         self.break_hosts()
         second = self.restarted()
         self.assertEqual(second.enforce()["verdict"], "breach")
-        self.assertEqual(self.calls[-1][0], "challenge")
         self.assertEqual(len(self.breaches()), 1)
+        # The lock, not a challenge, and that is the whole point: the graced
+        # start was a real weakening and counts toward the rung, so the second
+        # one is the second in the window. Silence about it was all the grace
+        # ever bought -- the operator can be locked without having been shown a
+        # challenge first, which is the consequence they chose.
+        self.assertEqual(self.calls[-1][0], "lock")
 
     def test_a_notifier_that_fails_does_not_break_enforcement(self):
         self.settle()

@@ -51,6 +51,36 @@ class TestUnacknowledged(unittest.TestCase):
         self.assertEqual(ladder.unacknowledged(entries, now=NOW), 1)
 
 
+class TestGracedStarts(unittest.TestCase):
+    """A graced start is on the ladder but not on the screen.
+
+    Two properties, deliberately pinned apart so a later change cannot collapse
+    them back into one: the grace decides whether a weakening is shown, never
+    whether it counts.
+    """
+
+    def test_a_graced_start_counts_toward_the_rung(self):
+        # The grace buys silence about a weakening, not forgiveness for it. The
+        # operator chose this explicitly, including that it can mean a lock with
+        # no challenge shown first.
+        entries = [e("graced", NOW - 60), e("breach", NOW)]
+        self.assertEqual(ladder.rung(entries, now=NOW), ladder.LOCK)
+
+    def test_a_graced_start_alone_is_one_not_two(self):
+        self.assertEqual(ladder.unacknowledged([e("graced", NOW)], now=NOW), 1)
+
+    def test_an_ack_clears_a_graced_start_too(self):
+        entries = [e("graced", NOW - 60), {"kind": "ack", "at": NOW}]
+        self.assertEqual(ladder.unacknowledged(entries, now=NOW), 0)
+
+    def test_a_graced_start_is_never_delivered(self):
+        # The other half, and the reason the kind exists at all: a daemon
+        # coming up mid-transaction must not put a challenge on screen for
+        # part-written files. Counted, and still not shown.
+        self.assertFalse(ladder.needs_delivery([e("graced", NOW)]))
+        self.assertIsNone(ladder.pending_delivery([e("graced", NOW)]))
+
+
 class TestRung(unittest.TestCase):
     def test_first_breach_challenges(self):
         self.assertEqual(ladder.rung([e("breach", NOW)], now=NOW), ladder.CHALLENGE)

@@ -24,6 +24,14 @@ def unacknowledged(entries, now=None, window=WINDOW_SECONDS):
     An acknowledgement clears everything before it. Dismissing a challenge is
     not an acknowledgement -- the breach stands, so the next one is the second
     in the window and lands on the lock.
+
+    A graced start counts alongside a breach, and has to. It is what the daemon
+    records when it comes up and finds a weakening it cannot attribute to a
+    package transaction: a real weakening, which the start grace only bought
+    silence about. Silence is not forgiveness. The consequence is deliberate
+    and was chosen with its cost understood -- a graced start followed by a
+    real weakening reaches the lock, so the operator can be locked out without
+    having been shown a challenge first.
     """
     now = time.time() if now is None else now
     count = 0
@@ -34,7 +42,7 @@ def unacknowledged(entries, now=None, window=WINDOW_SECONDS):
         if kind == "ack":
             count = 0
             continue
-        if kind != "breach":
+        if kind not in ("breach", "graced"):
             continue
         at = entry.get("at")
         # bool is an int in Python, and a True here would read as an ancient
@@ -51,7 +59,12 @@ def unacknowledged(entries, now=None, window=WINDOW_SECONDS):
 
 
 def rung(entries, now=None, window=WINDOW_SECONDS):
-    """CHALLENGE for the first unacknowledged breach in the window, LOCK after."""
+    """CHALLENGE for the first unacknowledged breach in the window, LOCK after.
+
+    "Breach" here means anything unacknowledged that unacknowledged() counts,
+    which includes a graced start: the grace decides whether a weakening is put
+    on screen, never whether it is on the ladder.
+    """
     return CHALLENGE if unacknowledged(entries, now, window) <= 1 else LOCK
 
 
