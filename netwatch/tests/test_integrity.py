@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import tempfile
@@ -155,9 +156,113 @@ class TestWeakened(unittest.TestCase):
             integrity.weakened(self.hosts, ["a.com"], self.policy, self.unit,
                                self.source, ledger_entries=entries), [])
 
+    def test_an_excluded_domain_is_skipped_by_the_sink_check(self):
+        # A domain added moments ago has no sink line yet: this runs before the
+        # repair that writes one. That is the caller's own work in progress.
+        both = ["a.com", "new.com"]
+        self.assertEqual(
+            integrity.weakened(self.hosts, both, self.policy, self.unit,
+                               self.source, exclude=("new.com",)), [])
+        # And without the exclusion the very same call does report it, so the
+        # assertion above is about `exclude` and not about an intact wall.
+        self.assertTrue(any("new.com" in r for r in
+            integrity.weakened(self.hosts, both, self.policy, self.unit,
+                               self.source)))
+
+    def test_an_excluded_domain_is_skipped_by_the_promise_check_too(self):
+        # The half that is easy to miss. A just-added domain is already in the
+        # ledger as `added`, so excusing only its missing sink line turns the
+        # excuse into an accusation: the domain reads as a promise somebody
+        # took away, which is a breach under a different name.
+        entries = [{"kind": "added", "domain": "new.com"}]
+        self.assertTrue(any("blocklist" in r for r in
+            integrity.weakened(self.hosts, ["a.com"], self.policy, self.unit,
+                               self.source, ledger_entries=entries)))
+        self.assertEqual(
+            integrity.weakened(self.hosts, ["a.com"], self.policy, self.unit,
+                               self.source, ledger_entries=entries,
+                               exclude=("new.com",)), [])
+
+    def test_an_exclusion_excuses_nothing_but_its_own_domain(self):
+        # The property the whole fix rests on: the excuse names domains, never
+        # reasons, so a weakening standing at the same moment is untouched.
+        os.unlink(self.unit)
+        os.symlink("/dev/null", self.unit)
+        with open(self.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        reasons = integrity.weakened(self.hosts, ["a.com", "new.com"],
+                                     self.policy, self.unit, self.source,
+                                     exclude=("new.com",))
+        self.assertTrue(any("a.com" in r for r in reasons))
+        self.assertTrue(any("unit" in r for r in reasons))
+        self.assertFalse(any("new.com" in r for r in reasons))
+
     def test_a_malformed_added_entry_is_skipped(self):
         entries = ["junk", {"kind": "added"}, {"kind": "added", "domain": 3}]
         self.assertEqual(integrity.unblocked_domains(entries, []), [])
+
+
+class TestReadTellsAbsentFromUnreadable(unittest.TestCase):
+    """`weakened` reads None as "this protection is missing", so what `_read`
+    returns for an error it cannot interpret decides whether a transient fault
+    is a breach. Under descriptor exhaustion every managed file failed to open
+    in the same cycle and the wall reported /etc/hosts, the policy and the unit
+    as all deleted at once -- two of those inside the ladder's window being a
+    twenty-minute lock nobody earned."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def test_a_missing_file_still_reads_as_absent(self):
+        self.assertIsNone(integrity._read(os.path.join(self.dir, "nothing")))
+
+    def test_a_path_through_a_file_reads_as_absent(self):
+        here = os.path.join(self.dir, "afile")
+        with open(here, "w") as f:
+            f.write("x")
+        self.assertIsNone(integrity._read(os.path.join(here, "child")))
+
+    def test_a_directory_reads_as_absent(self):
+        self.assertIsNone(integrity._read(self.dir))
+
+    def test_a_transient_error_propagates_rather_than_reading_as_absent(self):
+        boom = OSError(errno.EMFILE, "too many open files")
+        with mock.patch("builtins.open", side_effect=boom):
+            with self.assertRaises(OSError) as caught:
+                integrity._read(os.path.join(self.dir, "hosts"))
+        self.assertEqual(caught.exception.errno, errno.EMFILE)
+
+    def test_an_error_mid_read_propagates_too(self):
+        # Not only the open: an EIO part-way through the file is just as much a
+        # "cannot tell", and the text it would return is not the file's.
+        path = os.path.join(self.dir, "hosts")
+        with open(path, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+
+        class _FailsMidRead:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                raise OSError(errno.EIO, "input/output error")
+
+        with mock.patch("builtins.open", return_value=_FailsMidRead()):
+            with self.assertRaises(OSError):
+                integrity._read(path)
+
+    def test_the_transient_error_reaches_the_caller_of_weakened(self):
+        # Where it has to land: out of `weakened`, onto the backstop that
+        # abandons the cycle, rather than into a list of reasons.
+        boom = OSError(errno.EMFILE, "too many open files")
+        with mock.patch("builtins.open", side_effect=boom):
+            with self.assertRaises(OSError):
+                integrity.weakened(os.path.join(self.dir, "hosts"), ["a.com"],
+                                   os.path.join(self.dir, "policies.json"),
+                                   os.path.join(self.dir, "unit.service"),
+                                   os.path.join(self.dir, "unit.source"))
 
 
 class TestWasArmed(unittest.TestCase):

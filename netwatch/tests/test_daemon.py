@@ -4,7 +4,8 @@ import tempfile
 import time
 import unittest
 from unittest import mock
-from blackwall_netwatch import daemon, hosts, integrity, ladder, ledger, provenance
+from blackwall_netwatch import (daemon, hosts, integrity, ladder, ledger,
+                               provenance, server)
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
@@ -603,6 +604,21 @@ class TestWeakeningAndLadder(unittest.TestCase):
         os.unlink(self.paths.unit_file)
         os.symlink("/dev/null", self.paths.unit_file)
 
+    def unmask_unit(self):
+        os.unlink(self.paths.unit_file)
+        with open(self.paths.unit_file, "w") as f:
+            f.write("[Service]\n")
+
+    def acknowledge(self):
+        """Answer the challenge that was just delivered, as the plugin does.
+
+        Through the real command with the real token, because the point of the
+        test below is that a settled breach is settled -- and what settles it
+        is an `ack` entry that only a genuine token can produce.
+        """
+        token = self.calls[-1][1][1]
+        return server.handle(self.nw, {"cmd": "ack", "token": token})
+
     def breaches(self):
         return [e for e in ledger.read(self.paths.ledger)
                 if e.get("kind") == "breach"]
@@ -900,6 +916,92 @@ class TestWeakeningAndLadder(unittest.TestCase):
         with open(self.paths.hosts, "w") as f:
             f.write("127.0.0.1 localhost\n")
         self.assertEqual(nw.enforce()["verdict"], "breach")
+
+    def test_an_add_arriving_over_a_weakened_wall_is_still_a_breach(self):
+        # The verified hole, and the worst one found in this project. The
+        # socket is 0666, so anyone on this machine can weaken the wall and
+        # then send an add on the same cycle. The pending-add excuse used to be
+        # tested before the reasons were, so the add won and the masked unit
+        # was recorded as `applied`: two commands, no privilege, and the wall
+        # reporting itself healthy.
+        self.settle()
+        self.mask_unit()
+        self.nw.add("dummy.com")
+        result = self.nw.enforce()
+        self.assertEqual(result["verdict"], "breach")
+        self.assertTrue(any("unit" in r for r in result["reasons"]))
+        self.assertEqual(len(self.breaches()), 1)
+        self.assertEqual(self.calls[-1][0], "challenge")
+
+    def test_a_laundered_weakening_does_not_become_standing(self):
+        # The second half of the same hole, and the part that made it
+        # permanent. The laundering cycle also wrote its reasons into the
+        # standing-weakening memory, so every later cycle saw the masked unit
+        # as "already recorded" and stayed silent about it for ever -- the
+        # ledger showing no breach and the operator never challenged.
+        self.settle()
+        self.mask_unit()
+        self.nw.add("dummy.com")
+        self.nw.enforce()
+        for _ in range(3):
+            self.nw.enforce()
+        self.assertTrue(any("unit" in r for r in self.nw.status()["weakened"]))
+        recorded = self.breaches()
+        self.assertEqual(len(recorded), 1)
+        self.assertTrue(any("unit" in r for r in recorded[0]["reasons"]))
+        self.assertEqual([method for method, _ in self.calls], ["challenge"])
+
+    def test_an_ordinary_add_over_an_intact_wall_is_still_applied(self):
+        # The regression the fix must not cause. An add genuinely makes its own
+        # sink lines missing -- the check runs before the repair that writes
+        # them -- so putting reasons ahead of the excuse without narrowing the
+        # excuse to the added domain would file a breach against the operator
+        # every time they blocked a site.
+        self.settle()
+        verdicts = []
+        for domain in ("b.com", "c.com"):
+            self.nw.add(domain)
+            verdicts.append(self.nw.enforce()["verdict"])
+        self.assertEqual(verdicts, ["applied", "applied"])
+        self.assertEqual(self.breaches(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_an_unacknowledged_breach_still_seeds_the_standing_memory(self):
+        # Unchanged, and the reason the seeding exists: a weakening the ledger
+        # already carries and nobody has answered for is still standing, so a
+        # restart must not file it a second time.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()
+        seeded = self.restarted()._last_reasons
+        self.assertTrue(seeded)
+        self.assertTrue(any("unit" in r for r in seeded))
+
+    def test_an_acknowledged_breach_does_not_seed_the_standing_memory(self):
+        # An acknowledged weakening is closed. Seeding from it left a restarted
+        # daemon believing the settled reasons were still standing, which is a
+        # blindfold over exactly the tampering that had already happened once.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()
+        self.assertTrue(self.acknowledge()["ok"])
+        self.assertIsNone(self.restarted()._last_reasons)
+
+    def test_tampering_repeated_after_an_acknowledgement_is_filed_again(self):
+        # The whole of it end to end: mask, breach, acknowledge, repair, mask
+        # again, restart. The second masking is a second act and has to count.
+        # It used to be absorbed in silence -- one breach on record where there
+        # should be two, and no challenge for the repeat.
+        self.settle()
+        self.mask_unit()
+        self.nw.enforce()
+        self.assertTrue(self.acknowledge()["ok"])
+        self.unmask_unit()
+        self.mask_unit()
+        fresh = self.restarted()
+        self.assertEqual(fresh.enforce()["verdict"], "breach")
+        self.assertEqual(len(self.breaches()), 2)
+        self.assertEqual(self.calls[-1][0], "challenge")
 
 
 if __name__ == "__main__":

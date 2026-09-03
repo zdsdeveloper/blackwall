@@ -117,6 +117,12 @@ class NetWatch:
         # from someone having edited them. Without this the operator blocking a
         # site would file a breach against themselves.
         self._applied_pending = False
+        # The domains add() introduced since the last enforcement, consumed by
+        # the next one alongside _applied_pending. The flag alone said "some of
+        # this cycle's disagreement is ours"; it could not say WHICH of it, so
+        # a weakening that happened to be standing at the same moment was
+        # excused along with our own work. This is the half that names names.
+        self._pending_adds = set()
         # Consecutive failed enforcement cycles. The server owns it; status
         # reports it. A wall that has stopped being repaired has to be visible
         # somewhere, or "the daemon is up" reads as "the wall is up".
@@ -164,7 +170,13 @@ class NetWatch:
             # The enforcement this causes is our own work, not tampering: the
             # managed files are about to differ from the blocklist because we
             # just changed the blocklist. Consumed by the next enforce().
+            #
+            # The domain as well as the flag. The excuse has to be narrow
+            # enough to cover this add and nothing else -- the socket is 0666,
+            # so anyone on this machine can time an add to land on the same
+            # cycle as a weakening they just made.
             self._applied_pending = True
+            self._pending_adds.add(domain)
         return domain
 
     def enforce(self):
@@ -191,7 +203,11 @@ class NetWatch:
         reasons = integrity.weakened(
             self.paths.hosts, domains, self.paths.zen_policy,
             self.paths.unit_file, self.paths.unit_source,
-            ledger_entries=entries, ledger_path=self.paths.ledger)
+            ledger_entries=entries, ledger_path=self.paths.ledger,
+            # Only the domains this daemon added since the last cycle. Their
+            # sink lines are missing because the repair below has not run yet,
+            # which is our own work in progress; every other reason stands.
+            exclude=self._pending_adds)
         targets = []
         restored = integrity.unblocked_domains(entries, domains)
         if restored:
@@ -241,6 +257,7 @@ class NetWatch:
             # found anything to do; left set past an empty cycle it excuses the
             # NEXT hand edit as our own work, which is a hole in the wall.
             self._applied_pending = False
+            self._pending_adds = set()
             # Kept current even on a quiet cycle. A wall that has gone back to
             # intact must clear this, or a weakening repaired and then repeated
             # would read as the same one still standing and never be filed.
@@ -261,20 +278,28 @@ class NetWatch:
         # edit would be excused as our own work -- a hole in the wall.
         applied = self._applied_pending
         self._applied_pending = False
+        self._pending_adds = set()
         if not self._enforced_before(entries):
             # A machine that has never been enforced is being installed, and an
             # install is an install even when an add is what triggered it.
             verdict = "init"
-        elif applied:
-            verdict = "applied"
-        elif not reasons:
-            # Something changed but no protection was missing: an unrelated
-            # edit, a reordering. Repaired, recorded, never punished.
-            verdict = "repair"
-        else:
+        elif reasons:
+            # A weakening the pending add did not cause -- anything it did
+            # cause was excluded before `reasons` was built. Nothing excuses
+            # what is left. This is ordered ahead of `applied` deliberately:
+            # with the two the other way round, an add arriving on a 0666
+            # socket laundered tampering that was already standing, and because
+            # the cycle then recorded it in _last_reasons the laundering held
+            # for every cycle afterwards.
             verdict = provenance.classify(
                 self.paths.window_marker, self.paths.pacman_lock,
                 proc_dir=self.proc_dir)
+        elif applied:
+            verdict = "applied"
+        else:
+            # Something changed but no protection was missing: an unrelated
+            # edit, a reordering. Repaired, recorded, never punished.
+            verdict = "repair"
         recorded = verdict
         if verdict == "breach" and first:
             # The start grace, spent on the record rather than on the notice.
@@ -386,6 +411,13 @@ class NetWatch:
         for entry in reversed(entries):
             if not isinstance(entry, dict):
                 continue
+            # An acknowledgement closes everything before it, so the search
+            # ends here with nothing standing. Walking past an ack to the
+            # breach it settled seeded this instance with a weakening that has
+            # already been answered for -- and identical tampering afterwards
+            # was then absorbed in silence as "the same one still standing".
+            if entry.get("kind") == "ack":
+                return None
             # Breaches only. A graced start is the deferral of a filing,
             # not the filing itself -- seeding from one would suppress
             # the very breach the next cycle is supposed to make.

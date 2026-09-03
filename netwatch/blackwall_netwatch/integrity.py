@@ -21,10 +21,26 @@ FS_APPEND_FL = 0x00000020
 
 
 def _read(path):
+    """The file's text, or None when the file genuinely is not there.
+
+    Absent and could-not-tell are two different answers and only the first is
+    None, because `weakened` reads None as "this protection is missing". A
+    transient error swallowed here -- file descriptors exhausted, EIO, a mount
+    that went away -- would report /etc/hosts, the Zen policy and the unit as
+    all deleted in the same cycle: a breach the operator did nothing to earn,
+    and two of those inside the ladder's window is a lock with no release.
+
+    So every other OSError propagates. That looks like a regression of the rule
+    that no read may raise, and it is not: the backstop around the cycle
+    catches it, records `enforce-failed`, counts it, and abandons the cycle
+    without punishing anybody -- which is exactly where "I could not tell"
+    belongs. status()'s caller turns the same exception into an error reply
+    rather than into a confident lie about the wall.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
-    except (OSError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError, ValueError):
         return None
 
 
@@ -164,14 +180,30 @@ def was_armed(entries):
 
 
 def weakened(hosts_path, domains, policy_path, unit_path, unit_source,
-             ledger_entries=(), ledger_path=None):
-    """Reasons the wall is weaker than it should be. Empty means intact."""
+             ledger_entries=(), ledger_path=None, exclude=()):
+    """Reasons the wall is weaker than it should be. Empty means intact.
+
+    `exclude` names domains whose absence from the wall is this daemon's own
+    work in progress rather than somebody removing a protection: a domain the
+    caller added moments ago, asked about here because this runs before the
+    repair that writes it out.
+
+    It is honoured by both domain checks, and the second one matters as much as
+    the first. A just-added domain is already in the ledger as `added`, so
+    excusing only its missing sink line would leave it looking like a promise
+    that had been taken away -- the excuse turning into an accusation. What it
+    can never do is excuse anything else: it names domains, not reasons, and a
+    weakening somewhere else in the same cycle is untouched by it.
+    """
+    excluded = set(exclude)
     reasons = []
-    removed = unblocked_domains(ledger_entries, domains)
+    removed = [d for d in unblocked_domains(ledger_entries, domains)
+               if d not in excluded]
     if removed:
         reasons.append("blocklist: %d domain(s) removed (%s)" % (
             len(removed), removed[0]))
-    missing = missing_sinks(hosts_path, domains)
+    missing = missing_sinks(hosts_path, [d for d in domains
+                                         if d not in excluded])
     if missing:
         reasons.append("hosts: %d of %d sink lines missing (%s)" % (
             len(missing), len(hosts.expected_lines(domains)), missing[0]))

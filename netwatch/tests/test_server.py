@@ -1,13 +1,15 @@
 import dataclasses
+import errno
 import hashlib
 import json
 import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 from blackwall_netwatch.daemon import NetWatch, Paths
 from blackwall_netwatch.server import handle
-from blackwall_netwatch import daemon, ladder, ledger, server
+from blackwall_netwatch import daemon, integrity, ladder, ledger, server
 
 
 UNIT = "[Service]\nExecStart=/usr/local/bin/blackwall-netwatch\n"
@@ -206,6 +208,46 @@ class TestEnforceBackstop(unittest.TestCase):
         failed = [e for e in ledger.read(self.paths.ledger)
                   if e.get("kind") == "enforce-failed"]
         self.assertEqual(len(failed), 1)
+
+
+class TestTransientReadErrorIsNotABreach(unittest.TestCase):
+    """Where a "cannot tell" is supposed to land.
+
+    A read that fails for a reason other than the file being absent no longer
+    answers None, so it leaves `weakened` as an exception and lands here: the
+    cycle is abandoned, `enforce-failed` is recorded and counted, and nobody is
+    accused of anything. That is the backstop doing its job rather than a
+    regression of the rule that no read may raise.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.paths = paths_in(self.dir)
+        with open(self.paths.hosts, "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc)
+        self.nw = NetWatch(self.paths, flusher=lambda: None,
+                           proc_dir=self.proc, notifier=quiet_notifier)
+
+    def test_it_is_an_enforce_failure_not_a_weakening(self):
+        self.nw.add("a.com")
+        self.nw.enforce()
+        self.nw.enforce()
+        boom = OSError(errno.EMFILE, "too many open files")
+        with mock.patch.object(integrity, "_read", side_effect=boom):
+            result = server._enforce_quietly(self.nw)
+        self.assertIsNone(result["verdict"])
+        self.assertEqual(self.nw.enforce_failures, 1)
+        kinds = [e.get("kind") for e in ledger.read(self.paths.ledger)]
+        self.assertIn("enforce-failed", kinds)
+        self.assertEqual(kinds.count("breach"), 0)
+        # And the fault clears: the next cycle over readable files enforces
+        # normally and the count goes back to zero.
+        server._enforce_quietly(self.nw)
+        self.assertEqual(self.nw.enforce_failures, 0)
+        self.assertEqual(
+            [e.get("kind") for e in ledger.read(self.paths.ledger)].count("breach"), 0)
 
 
 class _FakeConn:
