@@ -285,7 +285,11 @@ Item {
           anchors.topMargin: 10
           anchors.left: parent.left
           anchors.right: parent.right
-          height: 186
+          // 186 at the size the window opens at, and gives ground when
+          // someone drags it smaller -- the tail takes a fixed 22% and the
+          // header is fixed, so a fixed hero is what pushes the columns to a
+          // negative height on a short window.
+          height: Math.max(96, Math.min(186, Math.round(parent.height * 0.30)))
 
           StationGyro {
             anchors.centerIn: parent

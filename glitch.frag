@@ -44,7 +44,7 @@ void main() {
     // Two clocks: `frame` drives the static and blocks, `slow` holds a tear
     // in place long enough to register before it moves.
     float frame = floor(time * stepRate);
-    float slow  = floor(time * stepRate * 0.1667);
+    float slow  = floor(time * stepRate / 6.0);
 
     // --- horizontal tear -----------------------------------------------
     // A couple of bands per slice slip sideways, the way a bad feed does.
