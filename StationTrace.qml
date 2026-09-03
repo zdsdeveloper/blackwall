@@ -21,15 +21,13 @@ Item {
   // The lit segment, as a fraction of the whole perimeter.
   property real tailFraction: 0.06
 
-  property real progress: 0
+  // Seconds, handed down from the station's one clock. Everything on this
+  // surface derives its motion from it instead of running an animation of its
+  // own -- see the note on the clock in BlackwallPanel.qml.
+  property real clock: 0
 
-  NumberAnimation on progress {
-    running: root.power > 0 && root.width > 0 && root.height > 0
-    from: 0
-    to: 1
-    duration: root.period
-    loops: Animation.Infinite
-  }
+
+  readonly property real progress: (root.clock / (root.period / 1000)) % 1
 
   readonly property real perimeter: 2 * (width + height)
 

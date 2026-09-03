@@ -18,6 +18,11 @@ Item {
   id: root
 
   property real scaleUnit: 200
+  // Seconds, handed down from the station's one clock. Everything on this
+  // surface derives its motion from it instead of running an animation of its
+  // own -- see the note on the clock in BlackwallPanel.qml.
+  property real clock: 0
+
   property bool steady: true
   property real power: 1
   property color inkColor: "#ff2b34"
@@ -45,16 +50,9 @@ Item {
       height: width
       opacity: root.power * ring.modelData.alpha
 
-      // 0..1 around the ring's own axis.
-      property real turn: ring.modelData.lead
-
-      NumberAnimation on turn {
-        running: root.power > 0
-        from: ring.modelData.lead
-        to: ring.modelData.lead + 1
-        duration: ring.modelData.period
-        loops: Animation.Infinite
-      }
+      // 0..1 around the ring's own axis, straight off the shared clock.
+      readonly property real turn: ring.modelData.lead
+        + root.clock / (ring.modelData.period / 1000)
 
       // A stalled loop drags the gyro rather than stopping it. A frozen one
       // reads as a broken window; a labouring one reads as a machine in

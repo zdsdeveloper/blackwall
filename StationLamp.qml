@@ -23,6 +23,12 @@ Item {
   // at once. 0 keeps the lamp dark whatever its state says.
   property real power: 1
 
+  // Seconds, handed down from the station's one clock. Everything on this
+  // surface derives its motion from it instead of running an animation of its
+  // own -- see the note on the clock in BlackwallPanel.qml.
+  property real clock: 0
+
+
   readonly property color litColor: "#ff2b34"
   readonly property color darkColor: Qt.rgba(1, 1, 1, 0.16)
   readonly property color unknownColor: Qt.rgba(1, 0.72, 0.28, 0.75)
@@ -37,25 +43,25 @@ Item {
   // The lamp breathes when lit and stutters when unknown. A dark lamp is
   // perfectly still, which is what makes it read as a dead circuit rather than
   // an idle one.
-  property real pulse: 0
+  // The breath and the stutter, as functions of the clock rather than as two
+  // competing animations. The shapes are the ones they replace: a slow
+  // sinusoidal swell for a lit lamp, and a quick rise with a long fall and a
+  // longer wait for one that cannot be read.
+  readonly property real pulse: {
+    if (root.power <= 0) return 0
+    if (root.lamp === "lit")
+      return 0.5 - 0.5 * Math.cos(2 * Math.PI * (root.clock / 4.7))
+    if (root.lamp === "unknown") {
+      var u = root.clock % 2.62
+      if (u < 0.32) return 0.2 + 0.7 * (u / 0.32)
+      if (u < 1.22) return 0.9 - 0.7 * ((u - 0.32) / 0.90)
+      return 0.2
+    }
+    return 0
+  }
 
   implicitHeight: Math.max(scaleUnit, labelText.implicitHeight)
   implicitWidth: dot.width + labelText.implicitWidth + scaleUnit * 0.6
-
-  SequentialAnimation on pulse {
-    running: root.lamp === "lit" && root.power > 0
-    loops: Animation.Infinite
-    NumberAnimation { from: 0; to: 1; duration: 2100; easing.type: Easing.InOutSine }
-    NumberAnimation { from: 1; to: 0; duration: 2600; easing.type: Easing.InOutSine }
-  }
-
-  SequentialAnimation on pulse {
-    running: root.lamp === "unknown" && root.power > 0
-    loops: Animation.Infinite
-    NumberAnimation { from: 0.2; to: 0.9; duration: 320 }
-    NumberAnimation { from: 0.9; to: 0.2; duration: 900 }
-    PauseAnimation { duration: 1400 }
-  }
 
   // The halo. No blur is available, so a larger, dimmer copy stands in — the
   // same trick the wall uses for its bloom.

@@ -47,6 +47,42 @@ Item {
   readonly property int rows: Logo.rowCount()
   readonly property int sliceCount: rows
 
+  // How many distinct phase values there are per ripple cycle. 0 means every
+  // frame, which is what the lock uses.
+  //
+  // The wall's cost is one full re-rasterisation of the logo per slice per
+  // change, because each slice's colour is rebound and a Text whose colour
+  // changed has to be repainted. Quantising the clock is what turns that from
+  // a per-frame cost into a per-step one: a binding that produces the same
+  // value does not emit a change, so nothing downstream re-evaluates. At 32
+  // steps over a 2.6s cycle that is about 12 updates a second, which is below
+  // what the eye resolves on a slow bloom and roughly a fifth of the work.
+  property int rippleSteps: 0
+
+  // Seconds, if someone else is keeping time. Negative means drive yourself,
+  // which is what the lock does and what this shipped as.
+  //
+  // A running animation holds the render loop at the display's refresh rate
+  // for as long as it runs -- measured at 144Hz here, five times the cost of
+  // the same motion stepped from a timer. The lock is on screen for minutes
+  // and wants every frame it can get. The station may sit open for hours.
+  property real clock: -1
+  readonly property bool externallyClocked: root.clock >= 0
+
+  onClockChanged: {
+    if (!root.externallyClocked) return
+    root.phase = ((root.clock / 2.6) % 1) * Model.TAU
+    root.breath = 0.5 - 0.5 * Math.cos(2 * Math.PI * (root.clock / 4.4))
+  }
+
+  function quantise(v, span, steps) {
+    if (steps <= 0) return v
+    return Math.round(v / span * steps) / steps * span
+  }
+
+  readonly property real steppedPhase: root.quantise(root.phase, Model.TAU, root.rippleSteps)
+  readonly property real steppedBreath: root.quantise(root.breath, 1, root.rippleSteps)
+
   // Measured at a known size and scaled, so the wall fills its share at a real
   // font size instead of being drawn small and scaled up into mush.
   TextMetrics {
@@ -94,7 +130,7 @@ Item {
   transformOrigin: Item.Center
 
   function sliceColor(index) {
-    var t = Model.intensityAt(index, root.sliceCount, root.phase, root.breath)
+    var t = Model.intensityAt(index, root.sliceCount, root.steppedPhase, root.steppedBreath)
     var r = 0.07 + 0.93 * t
     var g = 0.008 + 0.17 * t
     var b = 0.02 + 0.20 * t
@@ -113,7 +149,7 @@ Item {
   }
 
   NumberAnimation on phase {
-    running: root.active
+    running: root.active && !root.externallyClocked
     from: 0
     to: Model.TAU
     duration: 2600
@@ -121,7 +157,7 @@ Item {
   }
 
   SequentialAnimation on breath {
-    running: root.active
+    running: root.active && !root.externallyClocked
     loops: Animation.Infinite
     NumberAnimation { from: 0; to: 1; duration: 1900; easing.type: Easing.InOutSine }
     NumberAnimation { from: 1; to: 0; duration: 2500; easing.type: Easing.InOutSine }
@@ -172,8 +208,8 @@ Item {
         : 1
 
       Text {
-        x: Model.offsetAt(slice.index, root.sliceCount, root.phase,
-                          root.rippleAmplitude, root.breath)
+        x: Model.offsetAt(slice.index, root.sliceCount, root.steppedPhase,
+                          root.rippleAmplitude, root.steppedBreath)
           + (root.releasing
              ? Model.shatterOffset(slice.index, root.releaseProgress, root.width)
              : 0)

@@ -64,7 +64,38 @@ Item {
 
   property real bootProgress: 0
 
+  // ---- the station's clock -------------------------------------------------
+  //
+  // One timer, thirty steps a second, and every moving thing on the surface is
+  // a function of it. Nothing here runs an animation of its own.
+  //
+  // That is not a style choice. A running QML animation holds the render loop
+  // at the display's refresh rate for as long as it runs, and this display is
+  // 144Hz: measured on an otherwise identical window, one NumberAnimation cost
+  // 115 ticks per ten seconds against 23 for a 30Hz timer doing the same work.
+  // Because every animation pays for the same repaint, the costs do not add
+  // up and switching off any one of them saved almost nothing -- the whole set
+  // had to go for any of it to matter.
+  //
+  // Wall-clock rather than accumulated, so the station does not drift slow
+  // when a frame is late.
+  property real clock: 0
+  property double clockOrigin: 0
+
+  // One blink shared by every caret on the surface, so they agree with each
+  // other the way a single terminal's would.
+  readonly property real caretOn: (root.clock % 1.16) < 0.68 ? 1 : 0
+
+  Timer {
+    interval: 33
+    repeat: true
+    running: window.visible
+    onTriggered: root.clock = (Date.now() - root.clockOrigin) / 1000
+  }
+
   function boot() {
+    root.clockOrigin = Date.now()
+    root.clock = 0
     root.bootProgress = 0
     bootRamp.restart()
     root.poll()
@@ -81,9 +112,13 @@ Item {
     // on it; QML tracks property reads through the call.
     if (!window.visible) return 0
 
-    // Each slot opens a fifth of a second after the one before it and takes
-    // 300ms to come up.
-    var start = slot * 0.11
+    // Each slot opens a little after the one before it and takes 300ms to come
+    // up. The spacing has to leave the last slot a full 300ms of ramp to climb
+    // in, or it never reaches full power and simply stays dim forever: at 0.11
+    // per slot, slot 9 started at 0.99 and settled at 3% opacity, which is why
+    // the console was there but unreadable. At 0.07 every slot still lands in
+    // order and every slot finishes lit.
+    var start = slot * 0.07
     return Model.clamp((root.bootProgress - start) / 0.30, 0, 1)
   }
 
@@ -210,8 +245,8 @@ Item {
   FloatingWindow {
     id: window
     title: "NetWatch — Blackwall Monitor"
-    implicitWidth: 940
-    implicitHeight: 700
+    implicitWidth: 1020
+    implicitHeight: 860
     color: "#050102"
 
     onVisibleChanged: if (!visible) root.requestClose()
@@ -226,6 +261,7 @@ Item {
       GlitchBackground {
         anchors.fill: parent
         running: window.visible
+        externalClock: root.clock
         intensity: (0.20 + 0.10 * wall.breath) * root.powerAt(0)
         grainScale: 2.6
         stepRate: 2.5
@@ -235,6 +271,7 @@ Item {
       // The perimeter trace. Decorative, and the clearest signal from across
       // the room that the post is live.
       StationTrace {
+        clock: root.clock
         anchors.fill: parent
         anchors.margins: 6
         power: root.powerAt(1)
@@ -242,18 +279,21 @@ Item {
       }
 
       Item {
+        id: deck
         anchors.fill: parent
-        anchors.margins: 22
+        anchors.margins: 18
 
         // ---- header -------------------------------------------------------
+
         Item {
           id: header
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.right: parent.right
-          height: 26
+          height: 30
 
           Text {
+            id: brand
             anchors.verticalCenter: parent.verticalCenter
             text: "NETWATCH  ──  BLACKWALL MONITOR"
             font.family: root.monoFamily
@@ -264,7 +304,26 @@ Item {
             opacity: root.powerAt(0)
           }
 
+          // A carrier between the title and the link state. It is the header's
+          // share of the motion, and it stops dead when the daemon does.
+          StationCircuit {
+            clock: root.clock
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: brand.right
+            anchors.leftMargin: 24
+            anchors.right: link.left
+            anchors.rightMargin: 24
+            height: 16
+            flow: "across"
+            traces: 2
+            seed: 7717
+            speed: root.daemonAnswering ? 1.6 : 0.15
+            power: root.powerAt(1)
+            inkColor: root.ink
+          }
+
           Text {
+            id: link
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right
             text: (root.daemonAnswering ? "LINK ESTABLISHED" : "NO LINK")
@@ -288,24 +347,54 @@ Item {
         //
         // The centrepiece, not an item in a column. Everything else on the
         // station is a readout about this; putting it in the corner said the
-        // opposite.
+        // opposite. The boards either side are there because the wall alone
+        // left the widest part of the window empty.
+
         Item {
           id: hero
           anchors.top: header.bottom
-          anchors.topMargin: 10
+          anchors.topMargin: 8
           anchors.left: parent.left
           anchors.right: parent.right
-          // 186 at the size the window opens at, and gives ground when
-          // someone drags it smaller -- the tail takes a fixed 22% and the
-          // header is fixed, so a fixed hero is what pushes the columns to a
-          // negative height on a short window.
-          height: Math.max(96, Math.min(186, Math.round(parent.height * 0.30)))
+          height: Math.max(132, Math.min(238, Math.round(parent.height * 0.26)))
+
+          StationCircuit {
+
+            clock: root.clock
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Math.round(parent.width * 0.21)
+            flow: "down"
+            traces: 4
+            seed: 4021
+            speed: root.daemonAnswering ? 1.0 : 0.2
+            power: root.powerAt(2)
+            inkColor: root.ink
+          }
+
+          StationCircuit {
+
+            clock: root.clock
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Math.round(parent.width * 0.21)
+            flow: "down"
+            traces: 4
+            seed: 9137
+            speed: root.daemonAnswering ? 1.15 : 0.2
+            power: root.powerAt(2)
+            inkColor: root.ink
+          }
 
           StationGyro {
+
+            clock: root.clock
             anchors.centerIn: parent
-            scaleUnit: hero.height * 1.02
+            scaleUnit: hero.height * 1.12
             steady: root.daemonAnswering
-            power: root.powerAt(3) * 0.7
+            power: root.powerAt(3)
             inkColor: root.ink
           }
 
@@ -313,102 +402,327 @@ Item {
             id: wall
             anchors.centerIn: parent
             active: window.visible
+            clock: root.clock
             monoFamily: root.monoFamily
             availableWidth: hero.width
             availableHeight: hero.height
-            heightFraction: 0.52
-            widthFraction: 0.34
+            heightFraction: 0.60
+            widthFraction: 0.42
+            // Twelve updates a second instead of sixty. The ripple is a slow
+            // bloom; nobody was ever going to see the difference, and it is
+            // most of what the wall costs.
+            rippleSteps: 32
             opacity: root.powerAt(4)
           }
         }
 
-        // ---- the three columns --------------------------------------------
-        Row {
-          anchors.top: hero.bottom
-          anchors.topMargin: 16
+        // ---- the console ---------------------------------------------------
+        //
+        // Pinned to the bottom and given real room, because it is the only
+        // part of the station that answers "what has actually happened".
+
+        StationFrame {
+
+          clock: root.clock
+          id: consoleFrame
+          anchors.bottom: parent.bottom
           anchors.left: parent.left
           anchors.right: parent.right
-          anchors.bottom: tail.top
-          anchors.bottomMargin: 14
-          spacing: 22
+          height: Math.max(140, Math.min(300, Math.round(parent.height * 0.27)))
+          title: "CONSOLE"
+          annotation: root.logEntries.length + " ENTRIES"
+          font.family: root.monoFamily
+          power: root.powerAt(9)
+          inkColor: root.ink
+          padding: 10
+
+          StationConsole {
+
+            clock: root.clock
+            anchors.fill: parent
+            entries: root.logEntries
+            font.family: root.monoFamily
+            lineSize: 11
+            power: root.powerAt(9)
+            inkColor: root.ink
+          }
+        }
+
+        // ---- the instrument strip -------------------------------------------
+
+        Row {
+          id: instruments
+          anchors.bottom: consoleFrame.top
+          anchors.bottomMargin: 18
+          anchors.left: parent.left
+          anchors.right: parent.right
+          height: 104
+          spacing: 18
+
+          readonly property real cell: (width - 36) / 3
+
+          StationFrame {
+
+            clock: root.clock
+            width: instruments.cell
+            height: instruments.height
+            title: "SIGNAL"
+            annotation: root.daemonAnswering ? "NOMINAL" : "LOST"
+            alert: !root.daemonAnswering && root.everAnswered
+            font.family: root.monoFamily
+            power: root.powerAt(6)
+            inkColor: root.ink
+
+            StationWave {
+
+              clock: root.clock
+              anchors.fill: parent
+              power: root.powerAt(6)
+              inkColor: root.ink
+              bars: 52
+              agitated: root.everAnswered && !root.intact
+              speed: root.daemonAnswering ? 1 : 0.3
+            }
+          }
+
+          StationFrame {
+
+            clock: root.clock
+            width: instruments.cell
+            height: instruments.height
+            title: "BUS"
+            annotation: root.live.length + "/" + root.domains.length
+            font.family: root.monoFamily
+            power: root.powerAt(7)
+            inkColor: root.ink
+
+            StationCircuit {
+
+              clock: root.clock
+              anchors.fill: parent
+              flow: "across"
+              traces: 4
+              seed: 2551
+              speed: root.daemonAnswering ? 1.3 : 0.2
+              power: root.powerAt(7)
+              inkColor: root.ink
+            }
+          }
+
+          StationFrame {
+
+            clock: root.clock
+            width: instruments.cell
+            height: instruments.height
+            title: "INDEX"
+            font.family: root.monoFamily
+            power: root.powerAt(8)
+            inkColor: root.ink
+            live: false
+
+            Column {
+              anchors.fill: parent
+              spacing: 0
+
+              StationMeter {
+
+                clock: root.clock
+                width: parent.width
+                label: "SINK LINES"
+                // Four per subject: two families, two forms of the name.
+                value: String(root.domains.length * 4)
+                font.family: root.monoFamily
+                power: root.powerAt(8)
+                inkColor: root.ink
+              }
+
+              StationMeter {
+
+                clock: root.clock
+                width: parent.width
+                label: "BREACHES"
+                value: String(Number(root.report.breaches || 0))
+                alert: Number(root.report.breaches || 0) > 0
+                font.family: root.monoFamily
+                power: root.powerAt(8)
+                inkColor: root.ink
+              }
+
+              StationMeter {
+
+                clock: root.clock
+                width: parent.width
+                label: "FAULTS"
+                value: String(Number(root.report.enforce_failures || 0))
+                alert: Number(root.report.enforce_failures || 0) > 0
+                font.family: root.monoFamily
+                power: root.powerAt(8)
+                inkColor: root.ink
+              }
+            }
+          }
+        }
+
+        // ---- the three columns --------------------------------------------
+
+        Row {
+          id: columns
+          anchors.top: hero.bottom
+          anchors.topMargin: 18
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: instruments.top
+          anchors.bottomMargin: 18
+          spacing: 18
+
+          readonly property real usable: width - 36
 
           // ---------------------------------------------------- SUBJECT
-          Column {
-            width: Math.round((parent.width - 44) * 0.30)
-            height: parent.height
-            spacing: 12
+          StationFrame {
+            clock: root.clock
+            width: Math.round(columns.usable * 0.28)
+            height: columns.height
+            title: "SUBJECT"
+            alert: root.everAnswered && !root.intact
+            font.family: root.monoFamily
+            power: root.powerAt(5)
+            inkColor: root.ink
 
-            Text {
-              text: "SUBJECT"
-              font.family: root.monoFamily
-              font.pixelSize: 10
-              font.letterSpacing: 3
-              color: root.dim
-              opacity: root.powerAt(2)
-            }
+            Column {
+              id: subjectStack
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.right: parent.right
+              spacing: 10
 
-            StationLamp {
-              lamp: !root.everAnswered ? "idle" : (root.intact ? "lit" : "dark")
-              label: !root.everAnswered ? "INTEGRITY  ····" : (root.intact ? "INTEGRITY  INTACT" : "INTEGRITY  WEAKENED")
-              monoFamily: root.monoFamily
-              scaleUnit: 13
-              power: root.powerAt(5)
-            }
+              StationLamp {
 
-            StationLamp {
-              lamp: root.daemonAnswering ? "lit" : "dark"
-              label: "ENFORCING  " + (root.daemonAnswering ? "ACTIVE" : "SILENT")
-              monoFamily: root.monoFamily
-              scaleUnit: 13
-              power: root.powerAt(6)
-            }
-
-            // Every reason the wall is weaker than it should be, in the words
-            // the daemon used. No summary: the operator gets the finding.
-            Repeater {
-              model: root.weakReasons
-
-              delegate: Text {
-                required property var modelData
-                width: parent ? parent.width : 0
-                wrapMode: Text.WordWrap
-                text: "▸ " + modelData
-                font.family: root.monoFamily
-                font.pixelSize: 10
-                color: Qt.rgba(1, 0.42, 0.45, 1)
-                opacity: root.powerAt(6)
+                clock: root.clock
+                lamp: !root.everAnswered ? "idle" : (root.intact ? "lit" : "dark")
+                label: !root.everAnswered ? "INTEGRITY  ····" : (root.intact ? "INTEGRITY  INTACT" : "INTEGRITY  WEAKENED")
+                monoFamily: root.monoFamily
+                scaleUnit: 13
+                power: root.powerAt(5)
               }
+
+              StationLamp {
+
+                clock: root.clock
+                lamp: root.daemonAnswering ? "lit" : "dark"
+                label: "ENFORCING  " + (root.daemonAnswering ? "ACTIVE" : "SILENT")
+                monoFamily: root.monoFamily
+                scaleUnit: 13
+                power: root.powerAt(6)
+              }
+
+              Rectangle {
+                width: parent.width
+                height: 1
+                color: Qt.rgba(1, 0.24, 0.28, 0.16)
+              }
+
+              StationMeter {
+
+                clock: root.clock
+                width: parent.width
+                label: "SUBJECTS"
+                value: String(root.domains.length)
+                font.family: root.monoFamily
+                power: root.powerAt(6)
+                inkColor: root.ink
+              }
+
+              StationMeter {
+
+                clock: root.clock
+                width: parent.width
+                label: "ENFORCED"
+                value: String(root.live.length)
+                alert: root.everAnswered && root.live.length < root.domains.length
+                font.family: root.monoFamily
+                power: root.powerAt(6)
+                inkColor: root.ink
+              }
+
+              StationMeter {
+
+                clock: root.clock
+                width: parent.width
+                label: "CYCLE"
+                value: root.intervalSeconds + "s"
+                font.family: root.monoFamily
+                power: root.powerAt(7)
+                inkColor: root.ink
+              }
+
+              // Every reason the wall is weaker than it should be, in the
+              // words the daemon used. No summary: the operator gets the
+              // finding.
+              Repeater {
+                model: root.weakReasons
+
+                delegate: Text {
+                  required property var modelData
+                  width: parent ? parent.width : 0
+                  wrapMode: Text.WordWrap
+                  text: "▸ " + modelData
+                  font.family: root.monoFamily
+                  font.pixelSize: 10
+                  color: Qt.rgba(1, 0.42, 0.45, 1)
+                  opacity: root.powerAt(6)
+                }
+              }
+            }
+
+            // The panel's own internals, filling what the readings do not.
+            // A framed box with a third of its height empty reads as a
+            // layout that ran out rather than an instrument.
+            StationCircuit {
+              clock: root.clock
+              anchors.top: subjectStack.bottom
+              anchors.topMargin: 14
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              visible: height > 30
+              flow: "down"
+              traces: 3
+              seed: 6011
+              speed: root.daemonAnswering ? 0.8 : 0.15
+              power: root.powerAt(7)
+              inkColor: root.ink
             }
           }
 
           // ------------------------------------------------ CONTAINMENT
-          Column {
-            width: Math.round((parent.width - 44) * 0.40)
-            height: parent.height
-            spacing: 10
-
-            Text {
-              text: "CONTAINMENT  ──  " + root.domains.length
-              font.family: root.monoFamily
-              font.pixelSize: 10
-              font.letterSpacing: 3
-              color: root.dim
-              opacity: root.powerAt(2)
-            }
+          StationFrame {
+            clock: root.clock
+            id: containment
+            width: Math.round(columns.usable * 0.44)
+            height: columns.height
+            title: "CONTAINMENT"
+            annotation: String(root.domains.length)
+            font.family: root.monoFamily
+            power: root.powerAt(5)
+            inkColor: root.ink
 
             // One row per contained subject. The lamp is lit only when that
             // block is verified present in the hosts file right now — not when
             // the blocklist claims it. A subject listed but not enforced is
             // exactly what the operator needs to see.
             Flickable {
-              width: parent.width
-              height: parent.height - 132
+              id: roll
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: commit.top
+              anchors.bottomMargin: 12
               contentHeight: subjects.height
               clip: true
 
               Column {
                 id: subjects
-                width: parent.width
+                width: roll.width
                 spacing: 4
 
                 Repeater {
@@ -420,14 +734,16 @@ Item {
                     required property int index
 
                     width: subjects.width
-                    height: 24
-                    color: hover.hovered ? Qt.rgba(1, 0.24, 0.28, 0.07) : "transparent"
+                    height: 26
+                    color: hover.hovered ? Qt.rgba(1, 0.24, 0.28, 0.09) : "transparent"
 
                     readonly property bool enforced: root.live.indexOf(subject.modelData) !== -1
 
                     HoverHandler { id: hover }
 
                     StationLamp {
+
+                      clock: root.clock
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.left: parent.left
                       anchors.leftMargin: 4
@@ -444,7 +760,7 @@ Item {
                       text: subject.modelData
                       font.family: root.monoFamily
                       font.pixelSize: 12
-                      color: subject.enforced ? Qt.rgba(1, 0.52, 0.55, 1) : Qt.rgba(1, 1, 1, 0.35)
+                      color: subject.enforced ? Qt.rgba(1, 0.58, 0.60, 1) : Qt.rgba(1, 1, 1, 0.35)
                       opacity: root.powerAt(5 + Math.min(6, subject.index * 0.4))
                     }
 
@@ -473,7 +789,10 @@ Item {
 
             // ---- the only verb the station offers
             Column {
-              width: parent.width
+              id: commit
+              anchors.bottom: parent.bottom
+              anchors.left: parent.left
+              anchors.right: parent.right
               spacing: 6
 
               Text {
@@ -487,7 +806,7 @@ Item {
 
               Rectangle {
                 width: parent.width
-                height: 30
+                height: 32
                 color: "#0d0203"
                 border.width: 1
                 border.color: field.activeFocus
@@ -508,6 +827,18 @@ Item {
                   clip: true
                   enabled: root.commitState !== "working"
                   onAccepted: root.contain(field.text)
+                }
+
+                // The caret, so an empty field still reads as a prompt waiting
+                // for something rather than a box.
+                Rectangle {
+                  visible: field.activeFocus && field.text === ""
+                  x: 8
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: 7
+                  height: 14
+                  color: root.ink
+                  opacity: root.caretOn
                 }
               }
 
@@ -536,165 +867,156 @@ Item {
           }
 
           // -------------------------------------------------- TELEMETRY
-          Column {
-            width: parent.width - Math.round((parent.width - 44) * 0.70) - 44
-            height: parent.height
-            spacing: 12
-
-            Text {
-              text: "TELEMETRY"
-              font.family: root.monoFamily
-              font.pixelSize: 10
-              font.letterSpacing: 3
-              color: root.dim
-              opacity: root.powerAt(2)
-            }
+          StationFrame {
+            clock: root.clock
+            width: columns.usable - Math.round(columns.usable * 0.28)
+                   - Math.round(columns.usable * 0.44)
+            height: columns.height
+            title: "TELEMETRY"
+            font.family: root.monoFamily
+            power: root.powerAt(5)
+            inkColor: root.ink
 
             Column {
-              width: parent.width
-              spacing: 4
+              id: telemetryStack
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.right: parent.right
+              spacing: 10
 
-              Text {
-                text: "RUNG"
-                font.family: root.monoFamily
-                font.pixelSize: 10
-                font.letterSpacing: 2
-                color: root.dim
-                opacity: root.powerAt(4)
-              }
-
-              // Two notches, and the second is a locked screen. Capacity, not
-              // a percentage — the shape says how much room is left.
-              StationBar {
+              Column {
                 width: parent.width
-                segments: 2
-                scaleUnit: 18
-                level: Math.min(1, root.unacked / 2)
-                critical: root.unacked >= 2
-                power: root.powerAt(4)
-              }
+                spacing: 4
 
-              Text {
-                text: root.unacked === 0
-                  ? "clear"
-                  : (root.unacked === 1 ? "one unanswered — next locks" : "locked on next breach")
-                font.family: root.monoFamily
-                font.pixelSize: 9
-                color: root.unacked >= 1 ? Qt.rgba(1, 0.72, 0.28, 0.9) : root.dim
-                opacity: root.powerAt(4)
-              }
-            }
-
-            Column {
-              width: parent.width
-              spacing: 4
-
-              Text {
-                text: "CYCLE"
-                font.family: root.monoFamily
-                font.pixelSize: 10
-                font.letterSpacing: 2
-                color: root.dim
-                opacity: root.powerAt(5)
-              }
-
-              StationSpark {
-                id: spark
-                width: parent.width
-                bars: 26
-                scaleUnit: 14
-                power: root.powerAt(5)
-              }
-            }
-
-            Item { width: 1; height: 6 }
-
-            StationLamp {
-              lamp: !root.everAnswered ? "idle" : (root.report.doh_locked ? "lit" : "dark")
-              label: "DoH LOCKED"
-              monoFamily: root.monoFamily
-              scaleUnit: 13
-              power: root.powerAt(6)
-            }
-
-            StationLamp {
-              lamp: !root.everAnswered ? "idle" : (root.report.unit_intact ? "lit" : "dark")
-              label: "UNIT INTACT"
-              monoFamily: root.monoFamily
-              scaleUnit: 13
-              power: root.powerAt(7)
-            }
-
-            // Three-state on purpose. A filesystem that cannot report the flag
-            // is not a ledger that lost it, and showing them alike would send
-            // the operator hunting a breach that never happened.
-            StationLamp {
-              lamp: {
-                if (!root.everAnswered) return "idle"
-                var sealed = root.report.ledger_sealed
-                if (sealed === null || sealed === undefined) return "unknown"
-                return sealed ? "lit" : "dark"
-              }
-              label: "LEDGER SEALED"
-              monoFamily: root.monoFamily
-              scaleUnit: 13
-              power: root.powerAt(8)
-            }
-
-            StationLamp {
-              lamp: Number(root.report.enforce_failures || 0) > 0 ? "unknown" : "idle"
-              label: "FAULTS  " + Number(root.report.enforce_failures || 0)
-              monoFamily: root.monoFamily
-              scaleUnit: 13
-              power: root.powerAt(8)
-            }
-          }
-        }
-
-        // ---- the ledger, tailing -------------------------------------------
-        Item {
-          id: tail
-          anchors.bottom: parent.bottom
-          anchors.left: parent.left
-          anchors.right: parent.right
-          height: Math.round(parent.height * 0.22)
-
-          Rectangle {
-            anchors.top: parent.top
-            width: parent.width
-            height: 1
-            color: Qt.rgba(1, 0.24, 0.28, 0.25 * root.powerAt(8))
-          }
-
-          Flickable {
-            anchors.fill: parent
-            anchors.topMargin: 8
-            contentHeight: entries.height
-            clip: true
-
-            Column {
-              id: entries
-              width: parent.width
-              spacing: 2
-
-              Repeater {
-                model: root.logEntries
-
-                delegate: Text {
-                  required property var modelData
-                  text: Model.stationLogLine(modelData)
+                Text {
+                  text: "RUNG"
                   font.family: root.monoFamily
                   font.pixelSize: 10
-                  color: modelData.kind === "breach"
-                    ? Qt.rgba(1, 0.42, 0.45, 1)
-                    : Qt.rgba(1, 1, 1, 0.30)
-                  opacity: root.powerAt(9)
+                  font.letterSpacing: 2
+                  color: root.dim
+                  opacity: root.powerAt(4)
+                }
+
+                // Two notches, and the second is a locked screen. Capacity,
+                // not a percentage — the shape says how much room is left.
+                StationBar {
+                  width: parent.width
+                  segments: 2
+                  scaleUnit: 20
+                  level: Math.min(1, root.unacked / 2)
+                  critical: root.unacked >= 2
+                  power: root.powerAt(4)
+                }
+
+                Text {
+                  text: root.unacked === 0
+                    ? "clear"
+                    : (root.unacked === 1 ? "one unanswered — next locks" : "locked on next breach")
+                  width: parent.width
+                  wrapMode: Text.WordWrap
+                  font.family: root.monoFamily
+                  font.pixelSize: 9
+                  color: root.unacked >= 1 ? Qt.rgba(1, 0.72, 0.28, 0.9) : root.dim
+                  opacity: root.powerAt(4)
                 }
               }
+
+              Column {
+                width: parent.width
+                spacing: 4
+
+                Text {
+                  text: "CYCLE"
+                  font.family: root.monoFamily
+                  font.pixelSize: 10
+                  font.letterSpacing: 2
+                  color: root.dim
+                  opacity: root.powerAt(5)
+                }
+
+                StationSpark {
+                  id: spark
+                  width: parent.width
+                  bars: 26
+                  scaleUnit: 16
+                  power: root.powerAt(5)
+                }
+              }
+
+              Rectangle {
+                width: parent.width
+                height: 1
+                color: Qt.rgba(1, 0.24, 0.28, 0.16)
+              }
+
+              StationLamp {
+
+                clock: root.clock
+                lamp: !root.everAnswered ? "idle" : (root.report.doh_locked ? "lit" : "dark")
+                label: "DoH LOCKED"
+                monoFamily: root.monoFamily
+                scaleUnit: 13
+                power: root.powerAt(6)
+              }
+
+              StationLamp {
+
+                clock: root.clock
+                lamp: !root.everAnswered ? "idle" : (root.report.unit_intact ? "lit" : "dark")
+                label: "UNIT INTACT"
+                monoFamily: root.monoFamily
+                scaleUnit: 13
+                power: root.powerAt(7)
+              }
+
+              // Three-state on purpose. A filesystem that cannot report the
+              // flag is not a ledger that lost it, and showing them alike
+              // would send the operator hunting a breach that never happened.
+              StationLamp {
+                clock: root.clock
+                lamp: {
+                  if (!root.everAnswered) return "idle"
+                  var sealed = root.report.ledger_sealed
+                  if (sealed === null || sealed === undefined) return "unknown"
+                  return sealed ? "lit" : "dark"
+                }
+                label: "LEDGER SEALED"
+                monoFamily: root.monoFamily
+                scaleUnit: 13
+                power: root.powerAt(8)
+              }
+
+              StationLamp {
+
+                clock: root.clock
+                lamp: Number(root.report.enforce_failures || 0) > 0 ? "unknown" : "idle"
+                label: "FAULTS  " + Number(root.report.enforce_failures || 0)
+                monoFamily: root.monoFamily
+                scaleUnit: 13
+                power: root.powerAt(8)
+              }
+            }
+
+            StationCircuit {
+
+              clock: root.clock
+              anchors.top: telemetryStack.bottom
+              anchors.topMargin: 14
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              visible: height > 30
+              flow: "down"
+              traces: 3
+              seed: 8803
+              speed: root.daemonAnswering ? 1.4 : 0.15
+              power: root.powerAt(8)
+              inkColor: root.ink
             }
           }
         }
       }
     }
   }
+
 }
