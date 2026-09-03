@@ -9,6 +9,7 @@ race to lose.
 import dataclasses
 import os
 import subprocess
+import time
 
 from . import blocklist, hosts, ledger, provenance, zenpolicy
 
@@ -19,6 +20,12 @@ from . import blocklist, hosts, ledger, provenance, zenpolicy
 # start, so the end state is a daemon that OOMs at boot: the wall down for good
 # and needing a root shell to repair.
 MAX_DOMAINS = 50000
+
+# How long a sanctioned window outlives the transaction behind it. pacman drops
+# db.lck and exits before the daemon's next cycle notices, and a PostTransaction
+# repair that did not land needs somewhere to land: without this grace the tail
+# of a real upgrade is a breach, and a breach is the expensive direction.
+WINDOW_GRACE_SECONDS = 60
 
 
 class BlocklistFull(Exception):
@@ -125,6 +132,11 @@ class NetWatch:
         if zenpolicy.apply(self.paths.zen_policy, package):
             targets.append("zen_policy")
         if not targets:
+            # Consumed here too. The flag is spent by the enforcement it was
+            # raised for whether or not that enforcement found anything to do;
+            # left set past an empty cycle it excuses the NEXT hand edit as our
+            # own work, which is a hole in the wall.
+            self._applied_pending = False
             return {"changed": False, "verdict": None, "targets": []}
         # Consumed unconditionally, whatever verdict wins below: a flag left
         # set outlives the enforcement it was raised for, and the next hand
@@ -156,23 +168,28 @@ class NetWatch:
     def _reap_dead_window(self):
         """Keep the sanctioned transaction window honest.
 
-        A transaction that is aborted never runs its PostTransaction hook, so
-        the marker is left behind and every hand edit for the next half hour
-        reads as drift. A transaction that outlives the staleness bound has its
-        window expire underneath it, and ends in a false breach. Both are the
-        same question, asked here once: is a transaction actually still running?
+        A window stays open only while a transaction actually is. When one is
+        not, the marker is given a short grace before it goes: pacman exits a
+        moment before the daemon notices, and cutting the window the instant it
+        does would turn the tail of a real upgrade into a breach. After the
+        grace it is removed, so an aborted transaction cannot leave the wall
+        excusing hand edits for half an hour.
         """
-        if not os.path.exists(self.paths.window_marker):
-            return
-        alive = (os.path.exists(self.paths.pacman_lock)
-                 or provenance.transaction_alive(self.proc_dir))
         try:
-            if alive:
-                os.utime(self.paths.window_marker, None)
-            else:
-                os.unlink(self.paths.window_marker)
+            age = time.time() - os.stat(self.paths.window_marker).st_mtime
         except OSError:
-            pass
+            return
+        if provenance.transaction_in_progress(
+                self.paths.pacman_lock, proc_dir=self.proc_dir):
+            try:
+                os.utime(self.paths.window_marker, None)
+            except OSError:
+                pass
+        elif age > WINDOW_GRACE_SECONDS:
+            try:
+                os.unlink(self.paths.window_marker)
+            except OSError:
+                pass
 
     def close_window(self):
         """Drop the sanctioned-transaction marker.

@@ -59,12 +59,25 @@ def transaction_alive(proc_dir=PROC_DIR):
     return False
 
 
+def transaction_in_progress(pacman_lock, now=None, proc_dir=PROC_DIR):
+    """Is a package transaction actually under way?
+
+    One definition, used by both the classifier and the window reaper. They had
+    two, and the reaper's was the looser: it took the mere existence of db.lck
+    as proof, so a lock left behind by a killed pacman kept the sanctioned
+    window refreshed for ever and every hand edit after it read as drift.
+    """
+    now = time.time() if now is None else now
+    age = _age(pacman_lock, now)
+    if age is None:
+        return transaction_alive(proc_dir)
+    return age <= STALE_AFTER_SECONDS or transaction_alive(proc_dir)
+
+
 def classify(window_marker, pacman_lock, now=None, proc_dir=PROC_DIR):
     now = time.time() if now is None else now
-    lock_age = _age(pacman_lock, now)
-    if lock_age is not None:
-        if lock_age <= STALE_AFTER_SECONDS or transaction_alive(proc_dir):
-            return "drift"
+    if transaction_in_progress(pacman_lock, now, proc_dir):
+        return "drift"
     marker_age = _age(window_marker, now)
     if marker_age is not None and marker_age <= STALE_AFTER_SECONDS:
         return "drift"

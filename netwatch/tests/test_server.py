@@ -216,6 +216,19 @@ class _BrokenConn(_FakeConn):
         raise BrokenPipeError("peer went away")
 
 
+class _ExplodingReplyConn(_FakeConn):
+    """A connection whose reply write fails in a way _reply does not absorb.
+
+    _reply swallows OSError, which is the ordinary hang-up. This is the other
+    kind: anything else from the socket layer escapes it and unwinds
+    serve_connection, which is exactly the path that used to lose the answer to
+    "did this request change what is enforced?".
+    """
+
+    def sendall(self, data):
+        raise RuntimeError("the socket layer came apart")
+
+
 class _DrippingConn:
     """A peer that keeps sending, slowly, and never sends a newline.
 
@@ -431,6 +444,17 @@ class TestServeConnection(unittest.TestCase):
                         b'{"cmd": "enforce"}\n'):
             self.assertTrue(
                 server.serve_connection(self.nw, _FakeConn([request])), request)
+
+    def test_an_add_whose_reply_fails_still_earns_its_enforcement(self):
+        # The flag used to be derived after the reply was written, so a client
+        # that vanished between its add and the answer took the flag down with
+        # it: the accept loop skipped the immediate enforcement and the newly
+        # blocked domain stayed reachable until the next periodic cycle. The
+        # add itself had already succeeded. Over-enforcing costs one repair
+        # cycle; not enforcing after a real add is the wall silently down.
+        conn = _ExplodingReplyConn([b'{"cmd": "add", "domain": "a.com"}\n'])
+        self.assertTrue(server.serve_connection(self.nw, conn))
+        self.assertEqual(self.nw.domains(), ["a.com"])
 
     def test_reads_and_failures_report_no_change(self):
         # Including the two ways a connection produces no request at all: a

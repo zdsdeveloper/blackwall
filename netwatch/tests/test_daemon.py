@@ -220,14 +220,123 @@ class TestNetWatch(unittest.TestCase):
                     if e.get("kind") == "breach"]
         self.assertEqual(len(breaches), 1)
 
+    def _write_marker(self, age=0):
+        with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        if age:
+            past = time.time() - age
+            os.utime(self.paths.window_marker, (past, past))
+
+    def _write_lock(self, age=0):
+        with open(self.paths.pacman_lock, "w") as f:
+            f.write("")
+        if age:
+            past = time.time() - age
+            os.utime(self.paths.pacman_lock, (past, past))
+
     def test_reap_removes_a_window_with_no_transaction_behind_it(self):
         # An aborted transaction -- Ctrl-C, a failed download, a bad signature
         # -- never runs PostTransaction, so the marker outlives it and every
         # hand edit for the next half hour is excused as drift.
-        with open(self.paths.window_marker, "w") as f:
-            f.write("")
+        #
+        # Aged past the grace: the marker is no longer cut the instant liveness
+        # goes false, because pacman exits a moment before the daemon notices.
+        # What must not survive is a window with nothing behind it for long.
+        self._write_marker(age=daemon.WINDOW_GRACE_SECONDS + 5)
         self.nw._reap_dead_window()
         self.assertFalse(os.path.exists(self.paths.window_marker))
+
+    def test_a_stale_lock_does_not_buy_permanent_drift(self):
+        # The verified regression. A pacman killed mid-transaction leaves both
+        # db.lck and the marker behind. The reaper used to treat the mere
+        # existence of the lock as a live transaction, refresh the marker on
+        # every cycle, and so classify every hand edit from then on as drift --
+        # the wall detecting nothing at all, silently and for ever.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        old = provenance.STALE_AFTER_SECONDS + 60
+        self._write_lock(age=old)
+        self._write_marker(age=old)
+        verdicts = []
+        for _ in range(3):
+            with open(self.paths.hosts, "w") as f:
+                f.write(STOCK)
+            verdicts.append(self.nw.enforce()["verdict"])
+        self.assertEqual(verdicts, ["breach", "breach", "breach"])
+        self.assertFalse(os.path.exists(self.paths.window_marker))
+
+    def test_a_fresh_lock_is_a_live_transaction_and_holds_the_window_open(self):
+        # The other direction: a lock young enough to belong to a running
+        # transaction still means drift, and the window is held open under it
+        # rather than expiring in the middle of a real upgrade.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        stale = time.time() - (provenance.STALE_AFTER_SECONDS + 60)
+        self._write_marker(age=provenance.STALE_AFTER_SECONDS + 60)
+        self._write_lock()
+        os.unlink(self.paths.zen_policy)
+        self.assertEqual(self.nw.enforce()["verdict"], "drift")
+        self.assertTrue(os.path.exists(self.paths.window_marker))
+        self.assertGreater(os.stat(self.paths.window_marker).st_mtime, stale + 60)
+
+    def test_a_live_package_manager_refreshes_the_window_without_any_lock(self):
+        # paru drives libalpm itself; the lock can be absent or already dropped
+        # while the transaction is still very much running.
+        self._write_marker(age=provenance.STALE_AFTER_SECONDS + 60)
+        self.make_proc_alive("paru")
+        self.nw._reap_dead_window()
+        self.assertTrue(os.path.exists(self.paths.window_marker))
+        self.assertLess(
+            time.time() - os.stat(self.paths.window_marker).st_mtime, 60)
+
+    def test_reap_gives_a_just_closed_window_its_grace(self):
+        # pacman exits a moment before the daemon's next cycle notices. Cutting
+        # the window there would turn the tail of a real upgrade -- a repair
+        # that the PostTransaction hook did not land -- into a breach, and a
+        # false breach is the expensive direction.
+        self._write_marker(age=daemon.WINDOW_GRACE_SECONDS - 30)
+        self.nw._reap_dead_window()
+        self.assertTrue(os.path.exists(self.paths.window_marker))
+        # And the grace is a grace, not a reprieve: past it the window goes.
+        self._write_marker(age=daemon.WINDOW_GRACE_SECONDS + 30)
+        self.nw._reap_dead_window()
+        self.assertFalse(os.path.exists(self.paths.window_marker))
+
+    def test_an_enforcement_that_changed_nothing_still_spends_the_excuse(self):
+        # The flag is raised by add() and must be spent by the enforcement it
+        # was raised for -- including one that finds the managed files already
+        # in agreement. Left set past an empty cycle it excused the next
+        # genuine hand edit as our own work.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        self.nw._applied_pending = True
+        self.assertFalse(self.nw.enforce()["changed"])
+        self.assertFalse(self.nw._applied_pending)
+        with open(self.paths.hosts, "w") as f:
+            f.write(STOCK)
+        self.assertEqual(self.nw.enforce()["verdict"], "breach")
+
+    def test_an_enforcement_that_raised_keeps_the_excuse_for_the_retry(self):
+        # The deliberate asymmetry. If the enforcement blows up, the change the
+        # add asked for really has not been applied yet, so the excuse is still
+        # owed to the cycle that eventually applies it. Dropping it here would
+        # file a breach against the operator for blocking a site.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        self.nw.add("b.com")
+        original = daemon.hosts.apply
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("disk went away mid-repair")
+
+        daemon.hosts.apply = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                self.nw.enforce()
+        finally:
+            daemon.hosts.apply = original
+        self.assertTrue(self.nw._applied_pending)
+        self.assertEqual(self.nw.enforce()["verdict"], "applied")
 
     def test_reap_refreshes_the_window_of_a_long_running_transaction(self):
         # A large -Syu can outlast the staleness bound, and a window that

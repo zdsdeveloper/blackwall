@@ -169,6 +169,7 @@ def serve_connection(nw, conn):
     dropped or malformed connection has not: the socket is 0666, so a bare
     connect loop would otherwise run enforcement at full speed forever.
     """
+    mutated = False
     try:
         raw = _read_request(conn)
         if raw is None:
@@ -183,18 +184,26 @@ def serve_connection(nw, conn):
         except (ValueError, UnicodeDecodeError):
             _reply(conn, {"ok": False, "error": "malformed request"})
             return False
+        # Decided from the request, and decided here -- before handling and
+        # before the reply, the two steps that can throw. Derived after them, a
+        # client that hung up mid-reply took the answer down with it: the outer
+        # guard returned False, the accept loop skipped the enforcement, and a
+        # domain the operator had just added stayed unblocked until the next
+        # periodic cycle.
+        #
+        # Asked of the request, not the reply: a refused add still went through
+        # handle(), and the cost of an unnecessary enforcement is one repair
+        # cycle, while the cost of a missed one is the wall silently down.
+        mutated = (isinstance(request, dict)
+                   and request.get("cmd") in MUTATING_COMMANDS)
         try:
             reply = handle(nw, request, _peer_is_root(conn))
         except Exception:
             reply = {"ok": False, "error": "internal error"}
         _reply(conn, reply)
-        # Asked of the request, not the reply: a refused add still went through
-        # handle(), and the cost of an unnecessary enforcement is one repair
-        # cycle, while the cost of a missed one is the wall silently down.
-        return (isinstance(request, dict)
-                and request.get("cmd") in MUTATING_COMMANDS)
     except Exception:
-        return False
+        pass
+    return mutated
 
 
 def _serve_once(nw, server, last, interval):
