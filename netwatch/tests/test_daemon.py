@@ -221,6 +221,17 @@ class TestNetWatch(unittest.TestCase):
             f.write(json.dumps({"at": 2, "kind": "breach"}) + "\n")
         self.assertEqual(self.nw.status()["breaches"], 1)
 
+    def test_status_counts_a_graced_start_as_a_breach(self):
+        # The grace bought silence about a weakening, not a different
+        # classification, and this is the number the operator reads to
+        # understand their own history. Reported as 0 beside an unacked of 1 it
+        # would read as a contradiction.
+        with open(self.paths.ledger, "w") as f:
+            f.write(json.dumps({"at": time.time(), "kind": "graced"}) + "\n")
+        s = self.nw.status()
+        self.assertEqual(s["breaches"], 1)
+        self.assertEqual(s["unacknowledged"], 1)
+
     def test_adding_a_domain_is_never_a_breach(self):
         # An add changes the blocklist, so the enforcement it triggers finds the
         # managed files disagreeing with it -- indistinguishable, to the

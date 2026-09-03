@@ -64,13 +64,42 @@ removal path. Add domains deliberately.
   root-owned. It is never committed to this repository — it's personal, this
   repo is public, and `.gitignore` guards against it landing here by
   accident.
-- The event ledger (`/var/lib/blackwall/ledger.jsonl`) records what happened
-  — that a domain was added, that the wall was applied after you added one,
-  that a change looked like drift or like a breach — as kinds and counts and
-  timestamps only. It
-  never records a URL, a domain you visited, or any browsing content. It's a
-  record that the wall is doing its job, not a log of what's on the other
-  side of it.
+- The event ledger (`/var/lib/blackwall/ledger.jsonl`) records what happened,
+  one JSON object per line, as kinds and counts and timestamps only. The kinds
+  are listed in the next section. It never records a URL, a domain you
+  visited, or any browsing content. It's a record that the wall is doing its
+  job, not a log of what's on the other side of it.
+
+## What the ledger records
+
+The ledger is world-readable on purpose: it's your history, and you should be
+able to read it without asking anything for permission. Every line carries a
+kind, a timestamp, and — where it applies — which files were touched and what
+was found missing. It records **kinds, counts and reasons, never URLs and
+never browsing.** Nothing in it says where you went; it only says whether the
+wall was standing.
+
+| Kind | What it means |
+| --- | --- |
+| `init` | The first enforcement on a machine that had none. |
+| `added` | A domain was blocked. |
+| `applied` | The wall was brought in line with a change you made. |
+| `repair` | Something changed that did not weaken the wall. Fixed, not punished. |
+| `drift` | A package transaction changed a protected file. Repaired in silence. |
+| `breach` | A protection was missing: the wall was made weaker. |
+| `graced` | A breach found on the daemon's first cycle after starting. Recorded and counted like any other, but not put on screen — a daemon coming up in the middle of a package transaction shouldn't challenge you over half-written files. |
+| `delivered` | A breach was actually shown to a session. |
+| `ack` | A challenge was answered, which clears the count. |
+| `enforce-failed` | A cycle could not complete. If you see these, the wall is not being repaired. |
+
+`breach` and `graced` are the two that count toward the ladder, and `status`
+reports them together as the breach count. A `graced` entry is a real
+weakening that was found — the grace decides whether you get told about it at
+the time, not whether it happened.
+
+A `breach` with no `delivered` after it is one that never reached a screen,
+because there was no session up when it was found. It isn't forgotten: it's
+shown the next time there is somewhere to show it.
 
 ## Package upgrades vs. hand edits
 

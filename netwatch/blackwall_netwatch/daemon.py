@@ -402,9 +402,18 @@ class NetWatch:
         domains = self.domains()
         return {
             "domains": len(domains),
+            # A graced start counts here as well, matching the ladder. It was
+            # a real weakening; the start grace bought silence about it, not a
+            # different classification. This is the number the operator reads
+            # to understand their own history, and under-reporting it is worse
+            # than the oddity of counting something that was never put on
+            # screen -- it would also sit next to an "unacked" of 1 and read as
+            # a contradiction.
+            #
             # .get, matching _enforced_before: a truncated or hand-written
             # ledger line without a "kind" must not take status down with it.
-            "breaches": len([e for e in entries if e.get("kind") == "breach"]),
+            "breaches": len([e for e in entries
+                             if e.get("kind") in ("breach", "graced")]),
             "enforce_failures": self.enforce_failures,
             "unacknowledged": ladder.unacknowledged(entries),
             "weakened": integrity.weakened(
