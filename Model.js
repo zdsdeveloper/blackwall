@@ -110,7 +110,8 @@ function parseConfig(raw) {
   var defaults = {
     persistAcrossReboot: true,
     soundPath: "",
-    challengePhrase: DEFAULT_CHALLENGE_PHRASE
+    challengePhrase: DEFAULT_CHALLENGE_PHRASE,
+    agents: {}
   }
   var text = String(raw || "").trim()
   if (text === "") return defaults
@@ -124,7 +125,12 @@ function parseConfig(raw) {
       soundPath: String(parsed.soundPath || ""),
       // Falls back rather than ever landing empty, for the same reason.
       challengePhrase: String(parsed.challengePhrase || "").trim()
-        || DEFAULT_CHALLENGE_PHRASE
+        || DEFAULT_CHALLENGE_PHRASE,
+      // { "046d:405e": "ZAMIL" } -- a pointing device's USB id to the name
+      // the station greets. Anything that is not a plain object reads as no
+      // agents configured rather than taking the config down with it.
+      agents: (parsed.agents && typeof parsed.agents === "object"
+               && !Array.isArray(parsed.agents)) ? parsed.agents : {}
     }
   } catch (e) {
     return defaults
@@ -356,4 +362,65 @@ function facePressure(p) {
   if (phase === "press") return 0.30 + 0.70 * phaseSpan(p, BREACH_END, PRESS_END)
   if (phase === "surge") return 1.0
   return 1.0 - phaseSpan(p, SURGE_END, 1)
+}
+
+
+// ---------------------------------------------------------------- the agent
+//
+// The station greets whoever is at it by recognising their pointing device.
+//
+// This RECOGNISES. It does not authenticate, and nothing anywhere is gated on
+// it. Anyone holding that mouse is greeted by that name, a USB id is four
+// bytes anyone can claim, and the file listing them is world-readable. It is a
+// nameplate on a door, not a lock -- and in a plugin whose whole subject is
+// enforcement it is worth being exact about which of the two a thing is.
+
+// The pointing devices the kernel currently knows about, parsed out of
+// /proc/bus/input/devices.
+//
+// Never raises: a boot sequence that dies on an unfamiliar kernel format would
+// take the window with it, and the honest answer to an unreadable device list
+// is an empty one.
+function parsePointers(raw) {
+  var text = String(raw || "")
+  if (text === "") return []
+  var out = []
+  var blocks = text.split(/\n\s*\n/)
+  for (var i = 0; i < blocks.length; i++) {
+    var block = blocks[i]
+    // A pointing device is one the kernel gave a mouse handler to. That
+    // catches the touchpad as well as the mouse, which is correct -- both are
+    // pointers, and it is the configured id that picks one out, not this.
+    if (!/H:\s*Handlers=[^\n]*\bmouse\d/.test(block)) continue
+    var ids = block.match(/I:[^\n]*Vendor=([0-9a-fA-F]{1,4})\s+Product=([0-9a-fA-F]{1,4})/)
+    if (!ids) continue
+    var name = block.match(/N:\s*Name="([^"]*)"/)
+    out.push({
+      id: (ids[1] + ":" + ids[2]).toLowerCase(),
+      name: name ? name[1] : ""
+    })
+  }
+  return out
+}
+
+// The first pointer with a name against it, or "" for none.
+function identifyAgent(pointers, agents) {
+  if (!agents || typeof agents !== "object") return ""
+  if (!pointers || !pointers.length) return ""
+  // Both sides are lowercased before comparing. The device id is normalised
+  // on the way out of parsePointers, but the config is hand-written, and
+  // whether someone typed 046D or 046d must not decide whether they are
+  // recognised.
+  var byId = {}
+  for (var key in agents) {
+    if (agents.hasOwnProperty(key) && agents[key])
+      byId[String(key).toLowerCase()] = String(agents[key])
+  }
+  for (var i = 0; i < pointers.length; i++) {
+    var id = pointers[i] && pointers[i].id
+    if (!id) continue
+    var name = byId[String(id).toLowerCase()]
+    if (name) return name
+  }
+  return ""
 }

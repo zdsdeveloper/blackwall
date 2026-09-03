@@ -79,9 +79,9 @@ check("state: missing bootId reads as unknown", Model.parseState('{"deadline":99
 // ---------------------------------------------------------------- the config
 
 const DEFAULT = Model.DEFAULT_CHALLENGE_PHRASE;
-check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT });
-check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT });
-check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT });
+check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT, agents: {} });
+check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT, agents: {} });
+check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT, agents: {} });
 check("config: persist can be turned off", Model.parseConfig('{"persistAcrossReboot":false}').persistAcrossReboot, false);
 // Anything that is not literally false persists, because persisting is the
 // behaviour the plugin shipped with and the safer default.
@@ -203,6 +203,66 @@ check("censor: a breach reason is a detail too, and reasons name domains",
         .indexOf("xnxx"), -1);
 check("censor: a line with no detail is unchanged by it",
       Model.stationLogLine({ kind: "ack", at: AT }, true), "03:04:05  ack      ");
+
+// --------------------------------------------------------------- the agent
+//
+// Recognition, not authentication. Nothing is gated on any of this -- the
+// tests below are about the station greeting the right person, not about
+// keeping the wrong one out, and no test here should ever be read as the
+// second thing.
+
+const DEVICES = [
+  'I: Bus=0003 Vendor=046d Product=405e Version=0111',
+  'N: Name="Logitech M720 Triathlon"',
+  'H: Handlers=sysrq kbd leds event5 mouse1 ',
+  '',
+  'I: Bus=0018 Vendor=06cb Product=ce17 Version=0100',
+  'N: Name="SYNA32B5:00 06CB:CE17 Touchpad"',
+  'H: Handlers=event11 mouse3 ',
+  '',
+  'I: Bus=0003 Vendor=1d6b Product=0002 Version=0206',
+  'N: Name="Some Keyboard"',
+  'H: Handlers=kbd event2 ',
+  ''
+].join('\n');
+
+const pointers = Model.parsePointers(DEVICES);
+check("pointers: only devices with a mouse handler", pointers.length, 2);
+check("pointers: the mouse is identified by vendor:product", pointers[0].id, "046d:405e");
+check("pointers: the name comes along", pointers[0].name, "Logitech M720 Triathlon");
+check("pointers: the touchpad is a pointer too", pointers[1].id, "06cb:ce17");
+// A keyboard has no mouse handler and must not be offered as a pointer.
+check("pointers: a keyboard is not a pointer", pointers.map(p => p.id).indexOf("1d6b:0002"), -1);
+check("pointers: nothing is not a crash", Model.parsePointers(""), []);
+check("pointers: null is not a crash", Model.parsePointers(null), []);
+check("pointers: garbage is not a crash", Model.parsePointers("!!! not a device list"), []);
+
+check("agent: a configured mouse is recognised",
+      Model.identifyAgent(pointers, { "046d:405e": "ZAMIL" }), "ZAMIL");
+// Case in the config must not decide whether you are recognised.
+check("agent: the id match is case-insensitive",
+      Model.identifyAgent(pointers, { "046D:405E": "ZAMIL" }), "ZAMIL");
+check("agent: an unconfigured mouse is nobody",
+      Model.identifyAgent(pointers, { "1111:2222": "SOMEONE" }), "");
+check("agent: no agents configured is nobody",
+      Model.identifyAgent(pointers, {}), "");
+check("agent: no pointers is nobody",
+      Model.identifyAgent([], { "046d:405e": "ZAMIL" }), "");
+check("agent: a non-object agent map is not a crash",
+      Model.identifyAgent(pointers, null), "");
+check("agent: it skips unconfigured devices to find a configured one",
+      Model.identifyAgent(pointers, { "06cb:ce17": "TOUCHPAD" }), "TOUCHPAD");
+
+check("config: agents default to none", Model.parseConfig("").agents, {});
+check("config: agents are carried",
+      Model.parseConfig('{"agents":{"046d:405e":"ZAMIL"}}').agents,
+      { "046d:405e": "ZAMIL" });
+// An array is an object in JavaScript, and indexing it by a USB id yields
+// undefined -- which would read as "nobody" rather than as a broken config.
+check("config: an agents array is treated as none",
+      Model.parseConfig('{"agents":[1,2]}').agents, {});
+check("config: a scalar agents field is treated as none",
+      Model.parseConfig('{"agents":"zamil"}').agents, {});
 
 // -----------------------------------------------------------------------------
 

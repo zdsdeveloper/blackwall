@@ -47,6 +47,22 @@ Item {
   // because a reveal that outlived the session would be no protection at all.
   property bool revealed: false
 
+  // ---- who is at the post --------------------------------------------------
+  //
+  // Read once at open from /proc/bus/input/devices and matched against the
+  // agents map in the plugin config. RECOGNITION, not authentication: nothing
+  // is gated on it, a USB id is four bytes anyone can claim, and both files
+  // are world-readable. It puts a name on the greeting and does nothing else.
+  readonly property string home: Quickshell.env("HOME")
+  property var pointers: []
+  property var agents: ({})
+  readonly property string agentName: Model.identifyAgent(root.pointers, root.agents)
+  readonly property string agentToken:
+    root.pointers.length > 0 ? String(root.pointers[0].id) : ""
+
+  // True while the power-on sequence has the surface.
+  property bool booting: false
+
   property var report: ({})
   property var logEntries: []
   property bool everAnswered: false
@@ -127,9 +143,79 @@ Item {
     root.clockOrigin = Date.now()
     root.clock = 0
     root.bootProgress = 0
-    bootRamp.restart()
+    root.booting = true
     root.poll()
+    devicesProc.running = true
+    configProc.running = true
+    bootSequence.begin()
   }
+
+  // Handed over to by the power-on sequence, or by a click through it.
+  function powerUp() {
+    root.booting = false
+    bootRamp.restart()
+  }
+
+  Process {
+    id: devicesProc
+    command: ["cat", "/proc/bus/input/devices"]
+    stdout: StdioCollector { id: devicesOut; waitForEnd: true }
+    onExited: function (code, status) {
+      root.pointers = code === 0
+        ? Model.parsePointers(String(devicesOut.text || "")) : []
+    }
+  }
+
+  Process {
+    id: configProc
+    command: ["cat", root.home + "/.config/omarchy/zds.blackwall.json"]
+    stdout: StdioCollector { id: configOut; waitForEnd: true }
+    onExited: function (code, status) {
+      // No config file is not an error; it is nobody configured.
+      root.agents = code === 0
+        ? Model.parseConfig(String(configOut.text || "")).agents : ({})
+    }
+  }
+
+  // The lines the sequence prints. Every one is a live reading off the same
+  // status the panel is about to draw, so a line already on screen fills
+  // itself in the moment the first poll lands.
+  readonly property var bootLines: [
+    { label: "establishing link to enforcement daemon",
+      value: root.daemonAnswering ? "OK" : (root.everAnswered ? "LOST" : "...."),
+      alert: root.everAnswered && !root.daemonAnswering },
+    { label: "reading containment index",
+      value: root.everAnswered ? root.domains.length + " SUBJECTS" : "....",
+      alert: false },
+    { label: "verifying sink lines",
+      value: root.everAnswered ? (root.domains.length * 4) + " PRESENT" : "....",
+      alert: false },
+    { label: "enforcement coverage",
+      value: root.everAnswered
+        ? root.live.length + "/" + root.domains.length : "....",
+      alert: root.everAnswered && root.live.length < root.domains.length },
+    { label: "resolver sweep",
+      value: root.probeSwept
+        ? root.probeSunk + "/" + root.domains.length + " SUNK" : "NOT SWEPT",
+      alert: root.probeLeaks.length > 0 },
+    { label: "DNS-over-HTTPS lock",
+      value: root.everAnswered
+        ? (root.report.doh_locked ? "LOCKED" : "OPEN") : "....",
+      alert: root.everAnswered && !root.report.doh_locked },
+    { label: "unit integrity",
+      value: root.everAnswered
+        ? (root.report.unit_intact ? "INTACT" : "ALTERED") : "....",
+      alert: root.everAnswered && !root.report.unit_intact },
+    { label: "ledger seal",
+      value: root.everAnswered
+        ? (root.report.ledger_sealed === true ? "INTACT"
+           : (root.report.ledger_sealed === false ? "BROKEN" : "UNREADABLE"))
+        : "....",
+      alert: root.everAnswered && root.report.ledger_sealed === false },
+    { label: "reading hardware token",
+      value: root.agentToken !== "" ? root.agentToken.toUpperCase() : "NONE",
+      alert: false }
+  ]
 
   function powerAt(slot) {
     // A station nobody is looking at draws no power. Every animation on the
@@ -1124,6 +1210,23 @@ Item {
 
           }
         }
+      }
+
+      // The power-on sequence, over everything. The station behind it is dark
+      // while it runs -- bootProgress stays at zero, so every powerAt slot is
+      // zero -- and comes up when it hands over.
+      StationBoot {
+        id: bootSequence
+        anchors.fill: parent
+        clock: root.clock
+        monoFamily: root.monoFamily
+        inkColor: root.ink
+        netwatchInk: root.netwatchInk
+        netwatchGlow: root.netwatchGlow
+        lines: root.bootLines
+        agent: root.agentName
+        token: root.agentToken
+        onFinished: root.powerUp()
       }
     }
   }
