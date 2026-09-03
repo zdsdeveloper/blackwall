@@ -71,8 +71,16 @@ systemctl restart blackwall-netwatch.service 2>/dev/null ||
 # so a status printed here shows the OLD process dying and never the new one
 # running: "activating (auto-restart)" over "code=killed, signal=TERM", which is
 # what a SUCCESSFUL install looks like and reads exactly like a failed one.
-for _ in $(seq 1 40); do
-  [[ $(systemctl show blackwall-netwatch.service -P ActiveState) == active ]] && break
+# Poll the socket, not systemd's opinion. The unit is Type=simple, so systemd
+# calls it active the moment exec succeeds -- which is before the daemon has
+# bound anything. Waiting on ActiveState just moves the lie from the moment of
+# death to the moment of birth. The daemon is up when it answers.
+ready=
+for _ in $(seq 1 60); do
+  if netwatchctl status >/dev/null 2>&1; then
+    ready=yes
+    break
+  fi
   sleep 0.25
 done
 systemctl --no-pager --lines=0 status blackwall-netwatch.service || true
@@ -80,4 +88,9 @@ systemctl --no-pager --lines=0 status blackwall-netwatch.service || true
 # What the operator actually wants to know: not that a process exists, but that
 # the wall is up and what it currently holds.
 echo
-netwatchctl status || true
+if [[ -n $ready ]]; then
+  netwatchctl status
+else
+  echo "the daemon did not answer within 15s -- check: journalctl -u blackwall-netwatch -n 30" >&2
+  exit 1
+fi
