@@ -6,10 +6,18 @@ matters is narrower: is a protection we put in place now missing? Everything
 else is repaired in silence.
 """
 
+import array
+import fcntl
 import json
 import os
 
 from . import blocklist, hosts
+
+# linux/fs.h. The request number is the same on every 64-bit arch Omarchy runs
+# on, and a filesystem that does not implement it answers ENOTTY rather than
+# lying.
+FS_IOC_GETFLAGS = 0x80086601
+FS_APPEND_FL = 0x00000020
 
 
 def _read(path):
@@ -126,8 +134,37 @@ def unblocked_domains(entries, domains):
     return sorted(promised_domains(entries) - set(domains))
 
 
+def append_only(path):
+    """Is this file append-only? None when the filesystem cannot say.
+
+    None rather than False for "cannot tell": a filesystem without the
+    attribute is not evidence of tampering, and reading it as such would file
+    a breach against an operator whose /var happens to be on tmpfs.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        buf = array.array("L", [0])
+        fcntl.ioctl(fd, FS_IOC_GETFLAGS, buf, True)
+        return bool(buf[0] & FS_APPEND_FL)
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+
+
+def was_armed(entries):
+    """Has this ledger ever been observed append-only?"""
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("kind") == "armed":
+            return True
+    return False
+
+
 def weakened(hosts_path, domains, policy_path, unit_path, unit_source,
-             ledger_entries=()):
+             ledger_entries=(), ledger_path=None):
     """Reasons the wall is weaker than it should be. Empty means intact."""
     reasons = []
     removed = unblocked_domains(ledger_entries, domains)
@@ -142,4 +179,9 @@ def weakened(hosts_path, domains, policy_path, unit_path, unit_source,
         reasons.append("zen policy: DNS-over-HTTPS is not locked off")
     if not unit_intact(unit_path, unit_source):
         reasons.append("unit: missing, masked or altered")
+    if ledger_path is not None and was_armed(ledger_entries):
+        # `is False` deliberately, not falsy: None means the filesystem could
+        # not answer and must not read as tampering.
+        if append_only(ledger_path) is False:
+            reasons.append("ledger: no longer append-only")
     return reasons

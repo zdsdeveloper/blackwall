@@ -3,7 +3,8 @@ import os
 import tempfile
 import time
 import unittest
-from blackwall_netwatch import daemon, hosts, ladder, ledger, provenance
+from unittest import mock
+from blackwall_netwatch import daemon, hosts, integrity, ladder, ledger, provenance
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
@@ -520,6 +521,39 @@ class TestNetWatch(unittest.TestCase):
         # transaction, so "already gone" is the ordinary case.
         self.nw.close_window()
         self.assertFalse(os.path.exists(self.paths.window_marker))
+
+    def test_arming_is_recorded_once(self):
+        # append_only can't be exercised for real without root, so the seam
+        # is mocked: what matters here is that enforce() writes the entry on
+        # first sight of the attribute and never again, however many cycles
+        # follow.
+        with mock.patch.object(integrity, "append_only", return_value=True):
+            self.nw.enforce()
+            self.nw.enforce()
+            self.nw.enforce()
+        kinds = [e.get("kind") for e in ledger.read(self.paths.ledger)]
+        self.assertEqual(kinds.count("armed"), 1)
+
+    def test_an_armed_entry_alone_does_not_count_as_ever_enforced(self):
+        # A fresh install writes nothing but the arming entry until its first
+        # real cycle; that must not read as "this machine has a history".
+        ledger.record(self.paths.ledger, "armed")
+        self.assertFalse(self.nw._enforced_before())
+
+    def test_an_armed_entry_does_not_count_toward_unacknowledged(self):
+        # Recording that the ledger is now armed must not itself look like a
+        # breach worth escalating.
+        ledger.record(self.paths.ledger, "armed")
+        entries = ledger.read(self.paths.ledger)
+        self.assertEqual(ladder.unacknowledged(entries), 0)
+
+    def test_a_ledger_that_loses_append_only_after_arming_is_a_breach(self):
+        with mock.patch.object(integrity, "append_only", return_value=True):
+            self.nw.enforce()  # init: arms the ledger
+        with mock.patch.object(integrity, "append_only", return_value=False):
+            result = self.nw.enforce()
+        self.assertEqual(result["verdict"], "breach")
+        self.assertTrue(any("ledger" in r for r in result["reasons"]))
 
 
 class TestWeakeningAndLadder(unittest.TestCase):

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from blackwall_netwatch import hosts, integrity
 
 
@@ -157,6 +158,75 @@ class TestWeakened(unittest.TestCase):
     def test_a_malformed_added_entry_is_skipped(self):
         entries = ["junk", {"kind": "added"}, {"kind": "added", "domain": 3}]
         self.assertEqual(integrity.unblocked_domains(entries, []), [])
+
+
+class TestWasArmed(unittest.TestCase):
+    def test_true_once_an_armed_entry_exists(self):
+        self.assertTrue(integrity.was_armed([{"kind": "armed"}]))
+
+    def test_false_with_no_armed_entry(self):
+        self.assertFalse(integrity.was_armed([{"kind": "added", "domain": "a.com"}]))
+
+    def test_false_on_an_empty_ledger(self):
+        self.assertFalse(integrity.was_armed([]))
+
+    def test_ignores_a_malformed_entry(self):
+        self.assertFalse(integrity.was_armed(["junk", {"kind": "armed?"}]))
+
+
+class TestLedgerAppendOnlyWeakening(unittest.TestCase):
+    """`append_only` cannot be exercised against a real append-only file
+    without root, so these test the seam in `weakened` instead: what it does
+    with each of append_only's three possible answers, monkeypatched."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.hosts = os.path.join(self.dir, "hosts")
+        self.policy = os.path.join(self.dir, "policies.json")
+        self.unit = os.path.join(self.dir, "unit.service")
+        self.source = os.path.join(self.dir, "unit.source")
+        self.ledger_path = os.path.join(self.dir, "ledger.jsonl")
+        with open(self.hosts, "w") as f:
+            f.write(hosts.splice("127.0.0.1 localhost\n", hosts.render([])))
+        with open(self.policy, "w") as f:
+            json.dump({"policies": {"DNSOverHTTPS": {"Enabled": False, "Locked": True}}}, f)
+        for path in (self.unit, self.source):
+            with open(path, "w") as f:
+                f.write("[Service]\nExecStart=/usr/local/bin/blackwall-netwatch\n")
+
+    def reasons(self, ledger_entries):
+        return integrity.weakened(self.hosts, [], self.policy, self.unit,
+                                  self.source, ledger_entries=ledger_entries,
+                                  ledger_path=self.ledger_path)
+
+    def test_an_unarmed_ledger_is_not_a_weakening(self):
+        # Not yet armed: absence of the attribute is not evidence of anything,
+        # so append_only is never even consulted.
+        with mock.patch.object(integrity, "append_only", return_value=False):
+            self.assertEqual(self.reasons([]), [])
+
+    def test_an_armed_ledger_that_lost_the_attribute_is_a_weakening(self):
+        with mock.patch.object(integrity, "append_only", return_value=False):
+            reasons = self.reasons([{"kind": "armed"}])
+        self.assertTrue(any("ledger" in r for r in reasons))
+
+    def test_a_filesystem_that_cannot_answer_is_not_a_weakening(self):
+        # None, not False: /var on tmpfs is not tampering.
+        with mock.patch.object(integrity, "append_only", return_value=None):
+            self.assertEqual(self.reasons([{"kind": "armed"}]), [])
+
+    def test_an_armed_ledger_still_append_only_is_not_a_weakening(self):
+        with mock.patch.object(integrity, "append_only", return_value=True):
+            self.assertEqual(self.reasons([{"kind": "armed"}]), [])
+
+    def test_no_ledger_path_skips_the_check_entirely(self):
+        # The default: callers that do not pass ledger_path get the old
+        # behaviour, untouched by whatever append_only would have said.
+        with mock.patch.object(integrity, "append_only", return_value=False):
+            reasons = integrity.weakened(self.hosts, [], self.policy,
+                                         self.unit, self.source,
+                                         ledger_entries=[{"kind": "armed"}])
+        self.assertEqual(reasons, [])
 
 
 if __name__ == "__main__":

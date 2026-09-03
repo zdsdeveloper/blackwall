@@ -176,6 +176,13 @@ class NetWatch:
         # later, deliberately: the rung it computes has to count the entry
         # this cycle is about to write.
         entries = ledger.read(self.paths.ledger)
+        if not integrity.was_armed(entries) and \
+                integrity.append_only(self.paths.ledger) is True:
+            # First sight of the attribute. From here on its absence is a
+            # weakening; before it, a fresh install that has not been armed
+            # yet must not be accused of anything.
+            ledger.record(self.paths.ledger, "armed")
+            entries = ledger.read(self.paths.ledger)
         # Asked before the repair, because the repair is what destroys the
         # evidence: once hosts.apply has put the sink lines back, nothing on
         # disk still says they were missing a moment ago. This is the whole
@@ -184,7 +191,7 @@ class NetWatch:
         reasons = integrity.weakened(
             self.paths.hosts, domains, self.paths.zen_policy,
             self.paths.unit_file, self.paths.unit_source,
-            ledger_entries=entries)
+            ledger_entries=entries, ledger_path=self.paths.ledger)
         targets = []
         restored = integrity.unblocked_domains(entries, domains)
         if restored:
@@ -503,5 +510,5 @@ class NetWatch:
             "weakened": integrity.weakened(
                 self.paths.hosts, domains, self.paths.zen_policy,
                 self.paths.unit_file, self.paths.unit_source,
-                ledger_entries=entries),
+                ledger_entries=entries, ledger_path=self.paths.ledger),
         }
