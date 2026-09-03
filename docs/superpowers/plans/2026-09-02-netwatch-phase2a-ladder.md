@@ -171,7 +171,7 @@ git commit -m "netwatch: expected sink lines, and a managed region that stays pu
 - Test: `netwatch/tests/test_integrity.py`
 
 **Interfaces:**
-- Consumes: `hosts.expected_lines`, `hosts.region_lines`
+- Consumes: `hosts.expected_lines`
 - Produces: `missing_sinks(hosts_path, domains) -> list[str]`, `doh_locked(policy_path) -> bool`, `unit_intact(unit_path, source_path) -> bool`, `weakened(hosts_path, domains, policy_path, unit_path, unit_source) -> list[str]` (reasons; empty means intact)
 
 - [ ] **Step 1: Write the failing test**
@@ -210,6 +210,13 @@ class TestWeakened(unittest.TestCase):
         # The whole point of the change: adding a dev host is not tampering.
         with open(self.hosts, "a") as f:
             f.write("10.0.0.9 my-dev-box.local\n")
+        self.assertEqual(self.reasons(), [])
+
+    def test_a_sink_line_the_operator_wrote_themselves_counts(self):
+        # What matters is whether the block is in effect, not whose line it is.
+        text = open(self.hosts).read().replace("0.0.0.0 a.com\n", "")
+        with open(self.hosts, "w") as f:
+            f.write("0.0.0.0 a.com\n" + text)
         self.assertEqual(self.reasons(), [])
 
     def test_a_missing_sink_line_is_a_weakening(self):
@@ -300,11 +307,19 @@ def _read(path):
 
 
 def missing_sinks(hosts_path, domains):
-    """Expected sink lines that are not in the managed region."""
+    """Expected sink lines that are not present anywhere in the file.
+
+    The whole file, not just our managed region. What matters is whether the
+    block is in effect, and a sink line works wherever it sits -- so a line the
+    operator wrote themselves counts, and a duplicate region carrying the right
+    lines is a redundant copy rather than a decoy. Asking only about our own
+    region would mean a reader that has to agree with the writer about where
+    the region is, and that agreement is one more thing to get wrong.
+    """
     text = _read(hosts_path)
     if text is None:
         return list(hosts.expected_lines(domains))
-    present = set(line.strip() for line in hosts.region_lines(text))
+    present = set(line.strip() for line in text.splitlines())
     return [line for line in hosts.expected_lines(domains) if line not in present]
 
 
