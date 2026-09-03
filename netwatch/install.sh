@@ -39,5 +39,15 @@ touch /var/lib/blackwall/blocklist
 chmod 0644 /var/lib/blackwall/blocklist
 
 systemctl daemon-reload
-systemctl enable --now blackwall-netwatch.service
+systemctl enable blackwall-netwatch.service
+
+# Not `enable --now`: on a service that is already running that is a no-op, so a
+# reinstall would copy the new code in and leave the old process serving it --
+# an update that looks applied and is not.
+#
+# Once the unit is armed, `restart` is refused, because stopping is exactly what
+# arming forbids. Signalling it is not: Restart=always turns a TERM into a fresh
+# process on the new code. The wall never comes down, it only comes back newer.
+systemctl restart blackwall-netwatch.service 2>/dev/null ||
+  systemctl kill --signal=TERM blackwall-netwatch.service
 systemctl --no-pager --lines=5 status blackwall-netwatch.service
