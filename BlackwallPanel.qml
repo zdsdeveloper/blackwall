@@ -22,6 +22,7 @@ Item {
   property bool closingFromHost: false
 
   function open(payloadJson) {
+    root.revealed = false
     closingFromHost = false
     window.visible = true
     root.boot()
@@ -39,6 +40,12 @@ Item {
   }
 
   // ---- live state ---------------------------------------------------------
+
+  // The contained list is the most private thing on the surface, and a
+  // station left open on a second monitor shows it to the room. Hidden by
+  // default and revealed on a click -- and reset every time the window opens,
+  // because a reveal that outlived the session would be no protection at all.
+  property bool revealed: false
 
   property var report: ({})
   property var logEntries: []
@@ -421,33 +428,31 @@ Item {
           anchors.right: parent.right
           height: Math.max(132, Math.min(238, Math.round(parent.height * 0.26)))
 
-          StationConduit {
-
-            clock: root.clock
+          GhostStream {
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             width: Math.round(parent.width * 0.21)
-            flow: "down"
-            lanes: 5
-            packetSpacing: 58
-            speed: root.daemonAnswering ? 1.0 : 0.2
-            power: root.powerAt(2) * 0.5
+            clock: root.clock
+            monoFamily: root.monoFamily
+            lanes: 3
+            fallRate: 32
+            spawnEvery: 2.4
+            power: root.powerAt(2)
             inkColor: root.ink
           }
 
-          StationConduit {
-
-            clock: root.clock
+          GhostStream {
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             width: Math.round(parent.width * 0.21)
-            flow: "down"
-            lanes: 5
-            packetSpacing: 58
-            speed: root.daemonAnswering ? 1.15 : 0.2
-            power: root.powerAt(2) * 0.5
+            clock: root.clock
+            monoFamily: root.monoFamily
+            lanes: 3
+            fallRate: 36
+            spawnEvery: 2.9
+            power: root.powerAt(2)
             inkColor: root.ink
           }
 
@@ -504,6 +509,11 @@ Item {
             clock: root.clock
             anchors.fill: parent
             entries: root.logEntries
+            // Every add writes the domain into the log in plain text, so
+            // hiding the list while the console spelled it out underneath
+            // would be no protection at all -- which is exactly what it was
+            // doing until this line existed.
+            censored: !root.revealed
             font.family: root.monoFamily
             lineSize: 11
             power: root.powerAt(9)
@@ -567,6 +577,7 @@ Item {
             // actually resolve to, right now, on this machine.
             StationBus {
               anchors.fill: parent
+              censored: !root.revealed
               clock: root.clock
               epoch: root.epoch
               domains: root.domains
@@ -762,80 +773,142 @@ Item {
             // block is verified present in the hosts file right now — not when
             // the blocklist claims it. A subject listed but not enforced is
             // exactly what the operator needs to see.
-            Flickable {
+            // A ListView rather than a Repeater in a Flickable, because a
+            // Repeater builds a delegate for every row whether or not it is
+            // on screen. At seven subjects nobody would notice. At a hundred
+            // and twenty-eight it was a hundred and twenty-eight lamps, each
+            // with a pulse bound to the station clock, all of them animating
+            // behind a viewport that shows six -- and it would get worse with
+            // every domain added. A ListView builds the rows you can see.
+            ListView {
               id: roll
               anchors.top: parent.top
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.bottom: commit.top
               anchors.bottomMargin: 12
-              contentHeight: subjects.height
               clip: true
+              spacing: 4
+              boundsBehavior: Flickable.StopAtBounds
+              model: root.domains
 
-              Column {
-                id: subjects
-                width: roll.width
-                spacing: 4
+              delegate: Rectangle {
+              id: subject
+              required property var modelData
+              required property int index
 
-                Repeater {
-                  model: root.domains
+              width: roll.width
+              height: 26
+              color: hover.hovered ? Qt.rgba(1, 0.24, 0.28, 0.09) : "transparent"
 
-                  delegate: Rectangle {
-                    id: subject
-                    required property var modelData
-                    required property int index
+              readonly property bool enforced: root.live.indexOf(subject.modelData) !== -1
 
-                    width: subjects.width
-                    height: 26
-                    color: hover.hovered ? Qt.rgba(1, 0.24, 0.28, 0.09) : "transparent"
+              HoverHandler { id: hover }
 
-                    readonly property bool enforced: root.live.indexOf(subject.modelData) !== -1
+              StationLamp {
 
-                    HoverHandler { id: hover }
+                clock: root.clock
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left
+                anchors.leftMargin: 4
+                lamp: subject.enforced ? "lit" : "dark"
+                label: ""
+                scaleUnit: 12
+                power: root.powerAt(5 + Math.min(6, subject.index * 0.4))
+              }
 
-                    StationLamp {
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left
+                anchors.leftMargin: 26
+                // Blocks until the panel is asked to show them.
+                text: root.revealed
+                  ? subject.modelData
+                  : Model.redact(subject.modelData)
+                font.family: root.monoFamily
+                font.pixelSize: 12
+                // A bar has to read as something struck out, not as
+                // something picked out. Solid blocks at the colour the
+                // names are set in were brighter than the names.
+                color: !root.revealed
+                  ? Qt.rgba(1, 0.30, 0.33, 0.42)
+                  : (subject.enforced ? Qt.rgba(1, 0.58, 0.60, 1)
+                                      : Qt.rgba(1, 1, 1, 0.35))
+                opacity: root.powerAt(5 + Math.min(6, subject.index * 0.4))
+              }
 
-                      clock: root.clock
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.left: parent.left
-                      anchors.leftMargin: 4
-                      lamp: subject.enforced ? "lit" : "dark"
-                      label: ""
-                      scaleUnit: 12
-                      power: root.powerAt(5 + Math.min(6, subject.index * 0.4))
-                    }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: parent.right
+                anchors.rightMargin: 6
+                text: subject.enforced ? "CONTAINED" : "NOT ENFORCED"
+                font.family: root.monoFamily
+                font.pixelSize: 9
+                font.letterSpacing: 1
+                color: subject.enforced ? root.dim : Qt.rgba(1, 0.72, 0.28, 0.9)
+                opacity: root.powerAt(5 + Math.min(6, subject.index * 0.4))
+              }
 
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.left: parent.left
-                      anchors.leftMargin: 26
-                      text: subject.modelData
-                      font.family: root.monoFamily
-                      font.pixelSize: 12
-                      color: subject.enforced ? Qt.rgba(1, 0.58, 0.60, 1) : Qt.rgba(1, 1, 1, 0.35)
-                      opacity: root.powerAt(5 + Math.min(6, subject.index * 0.4))
-                    }
+              Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: Qt.rgba(1, 0.24, 0.28, 0.10)
+              }
+              }
+            }
 
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.right: parent.right
-                      anchors.rightMargin: 6
-                      text: subject.enforced ? "CONTAINED" : "NOT ENFORCED"
-                      font.family: root.monoFamily
-                      font.pixelSize: 9
-                      font.letterSpacing: 1
-                      color: subject.enforced ? root.dim : Qt.rgba(1, 0.72, 0.28, 0.9)
-                      opacity: root.powerAt(5 + Math.min(6, subject.index * 0.4))
-                    }
+            // Sits over the list while it is hidden, so a click anywhere on
+            // it reveals -- and so nothing underneath can be scrolled or
+            // picked at through the cover.
+            MouseArea {
+              anchors.fill: roll
+              visible: !root.revealed
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.revealed = true
 
-                    Rectangle {
-                      anchors.bottom: parent.bottom
-                      width: parent.width
-                      height: 1
-                      color: Qt.rgba(1, 0.24, 0.28, 0.10)
-                    }
-                  }
-                }
+              Rectangle {
+                anchors.centerIn: parent
+                width: hint.width + 26
+                height: hint.height + 14
+                color: "#0a0103"
+                border.width: 1
+                border.color: Qt.rgba(1, 0.24, 0.28, 0.35)
+                opacity: root.powerAt(6)
+              }
+
+              Text {
+                id: hint
+                anchors.centerIn: parent
+                horizontalAlignment: Text.AlignHCenter
+                text: "▓▓  CLASSIFIED  ▓▓\nclick to reveal"
+                font.family: root.monoFamily
+                font.pixelSize: 10
+                font.letterSpacing: 2
+                lineHeight: 1.6
+                color: Qt.rgba(1, 0.42, 0.45, 0.75)
+                opacity: root.powerAt(6)
+              }
+            }
+
+            // The way back. Always there once revealed, because a reveal you
+            // cannot undo is a reveal that stays up until the window closes.
+            Text {
+              anchors.top: parent.top
+              anchors.right: parent.right
+              visible: root.revealed
+              text: "HIDE"
+              font.family: root.monoFamily
+              font.pixelSize: 9
+              font.letterSpacing: 2
+              color: Qt.rgba(1, 0.42, 0.45, 0.85)
+              opacity: root.powerAt(6)
+
+              MouseArea {
+                anchors.fill: parent
+                anchors.margins: -6
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.revealed = false
               }
             }
 
@@ -1049,21 +1122,6 @@ Item {
               }
             }
 
-            StationConduit {
-
-              clock: root.clock
-              anchors.top: telemetryStack.bottom
-              anchors.topMargin: 14
-              anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              visible: height > 30
-              flow: "down"
-              lanes: 3
-              speed: root.daemonAnswering ? 1.4 : 0.15
-              power: root.powerAt(8) * 0.62
-              inkColor: root.ink
-            }
           }
         }
       }

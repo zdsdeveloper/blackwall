@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import "Model.js" as Model
 
 // The probe matrix: one cell per contained subject, showing what the resolver
 // actually said about it.
@@ -22,6 +23,8 @@ Item {
   property color inkColor: "#ff2b34"
   property color warnColor: "#ffb84a"
   property font font
+  // Names the leaking subjects, so it is redacted with everything else.
+  property bool censored: false
 
   // domains in display order, and the daemon's last sweep keyed by domain.
   property var domains: []
@@ -166,7 +169,10 @@ Item {
       text: {
         if (root.domains.length === 0) return "no subjects contained"
         if (!root.swept) return "awaiting first sweep"
-        if (root.leaks.length > 0) return "LEAKING  " + root.leaks.join("  ")
+        if (root.leaks.length > 0)
+          return "LEAKING  " + (root.censored
+            ? root.leaks.map(function (d) { return Model.redact(d) }).join("  ")
+            : root.leaks.join("  "))
         if (root.unknownCount > 0)
           return root.sunkCount + " sunk, " + root.unknownCount
             + " not probed yet"

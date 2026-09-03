@@ -138,8 +138,13 @@ function parseConfig(raw) {
 // The detail column carries whatever that kind of entry is actually about --
 // the domain for an add, the reason for a breach, the repaired file for a
 // drift. A log that printed only the kind would be a list of nouns.
-function stationLogLine(entry) {
-  if (!entry || typeof entry !== "object") return ""
+// The three columns of a console line, kept apart so a caller can show some
+// and hide others. The detail column is the only one that carries a domain
+// name -- in `domain` directly, and inside a breach reason -- which is what
+// makes it the column the station redacts.
+function stationLogParts(entry) {
+  if (!entry || typeof entry !== "object")
+    return { stamp: "", kind: "", detail: "" }
   var kind = String(entry.kind || "?")
   var at = Number(entry.at)
   var stamp = "--:--:--"
@@ -155,11 +160,37 @@ function stationLogLine(entry) {
   } else if (entry.targets && entry.targets.length) {
     detail = entry.targets.join(", ")
   }
+  return { stamp: stamp, kind: kind, detail: detail }
+}
+
+// Blocks standing in for text that is not to be read at a glance.
+//
+// The run is quantised rather than matching the original length exactly: a
+// redaction the same width as what it hides tells a reader how long the word
+// was, and with a list of known sites that is most of the way to telling them
+// which one it was.
+function redact(text) {
+  var s = String(text === null || text === undefined ? "" : text)
+  if (s === "") return ""
+  var n = Math.min(40, Math.max(4, Math.ceil(s.length / 4) * 4))
+  var out = ""
+  for (var i = 0; i < n; i++) out += "\u2588"
+  return out
+}
+
+// `censor` is optional and defaults off, so every existing caller is
+// unchanged. With it set, the detail column -- the only one that carries a
+// domain name -- comes back as blocks.
+function stationLogLine(entry, censor) {
+  var parts = stationLogParts(entry)
+  if (parts.stamp === "" && parts.kind === "") return ""
   // Padded so the kinds line up into a column. A tail that jitters left and
   // right is harder to skim than one that does not.
-  var kindCell = kind
+  var kindCell = parts.kind
   while (kindCell.length < 9) kindCell += " "
-  return stamp + "  " + kindCell + (detail === "" ? "" : "  " + detail)
+  var detail = censor ? redact(parts.detail) : parts.detail
+  return parts.stamp + "  " + kindCell
+    + (detail === "" ? "" : "  " + detail)
 }
 
 // ---------------------------------------------------------------- animation

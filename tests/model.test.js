@@ -160,6 +160,50 @@ check("ripple: intensity stays in range", Model.intensityAt(3, 12, 1.2, 1) <= 1,
 check("ripple: intensity never goes negative", Model.intensityAt(3, 12, 4.7, 0) >= 0, true);
 check("ripple: no amplitude, no offset", Model.offsetAt(2, 8, 1.0, 0, 1), 0);
 
+// ------------------------------------------------------------- the redaction
+//
+// The station hides the contained list until it is asked to show it. That is
+// only worth anything if the console hides the same names, since every add
+// puts one there in plain text.
+
+const P = Model.stationLogParts;
+check("parts: an add splits into three", P({ kind: "added", at: AT, domain: "x.com" }),
+      { stamp: "03:04:05", kind: "added", detail: "x.com" });
+check("parts: a breach puts the reason in detail", P({ kind: "breach", at: AT, reasons: ["unit: masked"] }).detail, "unit: masked");
+check("parts: targets fall back into detail", P({ kind: "drift", at: AT, targets: ["hosts", "zen_policy"] }).detail, "hosts, zen_policy");
+check("parts: a bare kind has no detail", P({ kind: "ack", at: AT }).detail, "");
+check("parts: a non-entry is empty, not a crash", P(null), { stamp: "", kind: "", detail: "" });
+// stationLogLine is now built from the parts; it must not have changed.
+check("parts: the line is still assembled the same way",
+      Model.stationLogLine({ kind: "added", at: AT, domain: "x.com" }),
+      "03:04:05  added      x.com");
+
+check("redact: nothing stays nothing", Model.redact(""), "");
+check("redact: null is not a crash", Model.redact(null), "");
+check("redact: undefined is not a crash", Model.redact(undefined), "");
+// Quantised, not exact: a block run the same width as the word tells a reader
+// how long it was, and against a list of known sites that is most of the way
+// to telling them which one.
+check("redact: length is quantised up to a multiple of four", Model.redact("abcde").length, 8);
+check("redact: a short word still gets a floor", Model.redact("a").length, 4);
+check("redact: long details are capped", Model.redact("x".repeat(400)).length, 40);
+check("redact: it is blocks", /^█+$/.test(Model.redact("hello")), true);
+// The load-bearing property: nothing of the original survives.
+check("redact: the original never appears in the output",
+      Model.redact("xvideos.com").indexOf("x"), -1);
+
+check("censor: off by default, so old callers are unchanged",
+      Model.stationLogLine({ kind: "added", at: AT, domain: "x.com" }),
+      "03:04:05  added      x.com");
+check("censor: on hides the domain but keeps the time and the kind",
+      Model.stationLogLine({ kind: "added", at: AT, domain: "xvideos.com" }, true),
+      "03:04:05  added      \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588");
+check("censor: a breach reason is a detail too, and reasons name domains",
+      Model.stationLogLine({ kind: "breach", at: AT, reasons: ["0.0.0.0 xnxx.com missing"] }, true)
+        .indexOf("xnxx"), -1);
+check("censor: a line with no detail is unchanged by it",
+      Model.stationLogLine({ kind: "ack", at: AT }, true), "03:04:05  ack      ");
+
 // -----------------------------------------------------------------------------
 
 if (failures > 0) {

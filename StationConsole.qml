@@ -20,6 +20,8 @@ Item {
   property var entries: []
   property font font
   property real lineSize: 11
+  // Redacts the detail column, which is the only one carrying a domain name.
+  property bool censored: false
 
   // Seconds, handed down from the station's one clock. Everything on this
   // surface derives its motion from it instead of running an animation of its
@@ -96,7 +98,8 @@ Item {
       readonly property bool newest: row.index === root.entries.length - 1
       readonly property bool breach: row.modelData
         && (row.modelData.kind === "breach" || row.modelData.kind === "lock")
-      readonly property string line: Model.stationLogLine(row.modelData)
+      readonly property var parts: Model.stationLogParts(row.modelData)
+      readonly property string line: Model.stationLogLine(row.modelData, root.censored)
 
       // The newest line writes itself in; every other line is simply there.
       readonly property string shown: row.newest
@@ -124,9 +127,13 @@ Item {
         font.family: root.font.family
         font.pixelSize: root.lineSize
         font.bold: row.breach
-        color: row.breach
-          ? Qt.rgba(1, 0.44, 0.46, 1)
-          : Qt.rgba(1, 0.62, 0.64, 0.88)
+        // A bar has to read as something struck out rather than picked out.
+        // At the colour the text is set in, a run of solid blocks is the
+        // brightest thing on the console -- which is the opposite of hiding.
+        color: root.censored && row.parts.detail !== ""
+          ? Qt.rgba(1, 0.30, 0.33, 0.40)
+          : (row.breach ? Qt.rgba(1, 0.44, 0.46, 1)
+                        : Qt.rgba(1, 0.62, 0.64, 0.88))
         opacity: root.power
       }
 
