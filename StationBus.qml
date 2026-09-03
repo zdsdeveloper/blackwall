@@ -63,6 +63,18 @@ Item {
     return n
   }
 
+  // Subjects the last sweep has no answer for -- added since it ran, or not
+  // reached before its deadline. Counted separately and said out loud,
+  // because the alternative is what this panel did when 121 domains were
+  // added between sweeps: report "all 128 sunk at the resolver" on the
+  // strength of seven answers. An unprobed name is not a verified one.
+  readonly property int unknownCount: {
+    var n = 0
+    for (var i = 0; i < root.domains.length; i++)
+      if (root.stateOf(root.domains[i]) === "unknown") n++
+    return n
+  }
+
   // Seconds until the next sweep, floored at zero. The daemon sweeps at the
   // end of an enforcement cycle, so this is "no sooner than", not "at".
   readonly property int nextIn: {
@@ -73,8 +85,24 @@ Item {
 
   // ---- the matrix ----------------------------------------------------------
 
-  readonly property real cellSize: 9
-  readonly property real cellGap: 4
+  readonly property real cellGap: 3
+
+  // The matrix has to hold whatever is contained. At seven subjects a 9px
+  // cell is right; at a hundred and twenty-eight it overruns the panel and
+  // draws over the readout underneath. So the cell shrinks to fit the room
+  // actually available, down to a floor where a cell is still a cell.
+  readonly property real matrixHeight: Math.max(0, root.height - footer.height - 6)
+  readonly property real cellSize: {
+    var n = root.domains.length
+    if (n <= 0 || root.width <= 0 || root.matrixHeight <= 0) return 9
+    for (var s = 9; s >= 3; s--) {
+      var cols = Math.floor((root.width + root.cellGap) / (s + root.cellGap))
+      if (cols < 1) continue
+      var rows = Math.ceil(n / cols)
+      if (rows * (s + root.cellGap) - root.cellGap <= root.matrixHeight) return s
+    }
+    return 3
+  }
   readonly property int perRow: Math.max(1,
     Math.floor((root.width + root.cellGap) / (root.cellSize + root.cellGap)))
 
@@ -83,6 +111,8 @@ Item {
     anchors.top: parent.top
     anchors.left: parent.left
     anchors.right: parent.right
+    height: root.matrixHeight
+    clip: true
     columns: root.perRow
     spacing: root.cellGap
 
@@ -124,6 +154,7 @@ Item {
   // ---- what it adds up to --------------------------------------------------
 
   Column {
+    id: footer
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: parent.bottom
@@ -135,16 +166,20 @@ Item {
       text: {
         if (root.domains.length === 0) return "no subjects contained"
         if (!root.swept) return "awaiting first sweep"
-        if (root.leaks.length === 0)
-          return "all " + root.domains.length + " sunk at the resolver"
-        return "LEAKING  " + root.leaks.join("  ")
+        if (root.leaks.length > 0) return "LEAKING  " + root.leaks.join("  ")
+        if (root.unknownCount > 0)
+          return root.sunkCount + " sunk, " + root.unknownCount
+            + " not probed yet"
+        return "all " + root.sunkCount + " sunk at the resolver"
       }
       font.family: root.font.family
       font.pixelSize: 10
       font.bold: root.leaks.length > 0
       color: root.leaks.length > 0
         ? root.warnColor
-        : (root.swept ? Qt.rgba(1, 0.58, 0.60, 0.88) : Qt.rgba(1, 1, 1, 0.34))
+        : (root.swept && root.unknownCount === 0
+           ? Qt.rgba(1, 0.58, 0.60, 0.88)
+           : Qt.rgba(1, 1, 1, 0.42))
       opacity: root.power
     }
 
