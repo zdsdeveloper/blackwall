@@ -556,6 +556,49 @@ class TestNetWatch(unittest.TestCase):
         self.assertEqual(result["verdict"], "breach")
         self.assertTrue(any("ledger" in r for r in result["reasons"]))
 
+    def test_status_reports_the_panel_fields(self):
+        self.nw.add("a.com")
+        self.nw.enforce()
+        s = self.nw.status()
+        self.assertEqual(s["domains_list"], ["a.com"])
+        self.assertEqual(s["blocked_live"], ["a.com"])
+        self.assertTrue(s["unit_intact"])
+        self.assertTrue(s["doh_locked"])
+        self.assertEqual(s["interval_seconds"], daemon.DEFAULT_INTERVAL_SECONDS)
+
+    def test_blocked_live_excludes_a_domain_whose_sink_lines_are_gone(self):
+        # The whole point of the panel's per-domain lamp: it has to reflect
+        # what /etc/hosts actually says right now, not what the blocklist
+        # claims -- a domain the blocklist still names but whose sink lines
+        # were hand-deleted must not read as live.
+        self.nw.add("a.com")
+        self.nw.add("b.com")
+        self.nw.enforce()
+        with open(self.paths.hosts) as f:
+            text = f.read()
+        for line in hosts.expected_lines(["b.com"]):
+            text = text.replace(line + "\n", "")
+        with open(self.paths.hosts, "w") as f:
+            f.write(text)
+        s = self.nw.status()
+        self.assertEqual(s["domains_list"], ["a.com", "b.com"])
+        self.assertIn("a.com", s["blocked_live"])
+        self.assertNotIn("b.com", s["blocked_live"])
+
+    def test_ledger_sealed_is_null_not_false_when_it_cannot_be_read(self):
+        # A fresh daemon has not written a ledger yet -- append_only cannot
+        # open a path that does not exist -- and "could not tell" must not be
+        # flattened into "not sealed": that would show the panel a bad lamp
+        # for an ordinary fresh install rather than an unknown one.
+        self.assertFalse(os.path.exists(self.paths.ledger))
+        self.assertIsNone(self.nw.status()["ledger_sealed"])
+
+    def test_ledger_sealed_reports_true_or_false_when_the_attribute_is_known(self):
+        with mock.patch.object(integrity, "append_only", return_value=True):
+            self.assertIs(self.nw.status()["ledger_sealed"], True)
+        with mock.patch.object(integrity, "append_only", return_value=False):
+            self.assertIs(self.nw.status()["ledger_sealed"], False)
+
 
 class TestWeakeningAndLadder(unittest.TestCase):
     def setUp(self):

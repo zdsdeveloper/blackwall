@@ -34,7 +34,14 @@ def main():
     add = sub.add_parser("add", help="block a domain, permanently")
     add.add_argument("domain")
     sub.add_parser("list", help="show blocked domains")
-    sub.add_parser("status", help="show counts")
+    status = sub.add_parser("status", help="show counts")
+    status.add_argument(
+        "--json", action="store_true",
+        help="print the status reply as one JSON object")
+    log = sub.add_parser("log", help="show recent ledger entries")
+    log.add_argument(
+        "--limit", type=int, default=40,
+        help="how many recent entries to show (default 40)")
     enforce = sub.add_parser("enforce", help="repair the managed files now")
     enforce.add_argument(
         "--close-window",
@@ -68,14 +75,22 @@ def main():
         if not reply["ok"]:
             sys.exit(reply["error"])
         print("acknowledged")
+    elif args.command == "log":
+        reply = call({"cmd": "log", "limit": args.limit})
+        if not reply["ok"]:
+            sys.exit(reply["error"])
+        print(json.dumps(reply["entries"]))
     else:
         reply = call({"cmd": "status"})
-        print("domains  %d" % reply["domains"])
-        print("breaches %d" % reply["breaches"])
-        print("failures %d" % reply["enforce_failures"])
-        print("unacked  %d" % reply.get("unacknowledged", 0))
-        for reason in reply.get("weakened", []):
-            print("WEAK     %s" % reason)
+        if args.json:
+            print(json.dumps(reply))
+        else:
+            print("domains  %d" % reply["domains"])
+            print("breaches %d" % reply["breaches"])
+            print("failures %d" % reply["enforce_failures"])
+            print("unacked  %d" % reply.get("unacknowledged", 0))
+            for reason in reply.get("weakened", []):
+                print("WEAK     %s" % reason)
 
 
 if __name__ == "__main__":

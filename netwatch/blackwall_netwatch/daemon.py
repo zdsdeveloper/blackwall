@@ -36,6 +36,11 @@ GRACE_DENIED_AFTER_BREACH_SECONDS = 10 * 60
 # of a real upgrade is a breach, and a breach is the expensive direction.
 WINDOW_GRACE_SECONDS = 60
 
+# The default enforcement cadence. serve() takes this as a parameter -- a test
+# driving the loop by hand needs a shorter one -- but the default has to live
+# somewhere status() can report it without importing server, so it lives here.
+DEFAULT_INTERVAL_SECONDS = 30
+
 
 class BlocklistFull(Exception):
     pass
@@ -523,8 +528,18 @@ class NetWatch:
     def status(self):
         entries = ledger.read(self.paths.ledger)
         domains = self.domains()
+        # The panel's per-domain lamp has to reflect verified reality, not
+        # what the blocklist claims. missing_sinks already computes exactly
+        # the inverse of "present in /etc/hosts right now" -- derived here
+        # rather than re-walking the file a second time with different logic
+        # that could quietly disagree with it.
+        missing_lines = set(integrity.missing_sinks(self.paths.hosts, domains))
+        blocked_live = [d for d in domains
+                        if not missing_lines.intersection(hosts.expected_lines([d]))]
         return {
             "domains": len(domains),
+            "domains_list": sorted(domains),
+            "blocked_live": blocked_live,
             # A graced start counts here as well, matching the ladder. It was
             # a real weakening; the start grace bought silence about it, not a
             # different classification. This is the number the operator reads
@@ -543,4 +558,12 @@ class NetWatch:
                 self.paths.hosts, domains, self.paths.zen_policy,
                 self.paths.unit_file, self.paths.unit_source,
                 ledger_entries=entries, ledger_path=self.paths.ledger),
+            "doh_locked": integrity.doh_locked(self.paths.zen_policy),
+            "unit_intact": integrity.unit_intact(
+                self.paths.unit_file, self.paths.unit_source),
+            # True / False / None -- None means the filesystem could not say,
+            # and must not be flattened to False: that would tell the panel a
+            # sealed ledger had been tampered with.
+            "ledger_sealed": integrity.append_only(self.paths.ledger),
+            "interval_seconds": DEFAULT_INTERVAL_SECONDS,
         }

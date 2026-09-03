@@ -710,5 +710,57 @@ class TestAck(unittest.TestCase):
         self.assertFalse(server.serve_connection(self.nw, conn))
 
 
+class TestLog(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        with open(os.path.join(self.dir, "hosts"), "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc)
+        self.paths = paths_in(self.dir)
+        self.nw = NetWatch(
+            self.paths, flusher=lambda: None, proc_dir=self.proc,
+            notifier=quiet_notifier)
+
+    def test_newest_last_and_respects_limit(self):
+        for domain in ("a.com", "b.com", "c.com"):
+            handle(self.nw, {"cmd": "add", "domain": domain})
+        reply = handle(self.nw, {"cmd": "log", "limit": 2})
+        self.assertTrue(reply["ok"])
+        self.assertEqual([e.get("domain") for e in reply["entries"]],
+                         ["b.com", "c.com"])
+
+    def test_defaults_to_forty(self):
+        for i in range(45):
+            handle(self.nw, {"cmd": "add", "domain": "d%d.example.com" % i})
+        reply = handle(self.nw, {"cmd": "log"})
+        self.assertEqual(len(reply["entries"]), 40)
+        # Newest last: the very last add made is the very last entry shown.
+        self.assertEqual(reply["entries"][-1]["domain"], "d44.example.com")
+
+    def test_survives_a_corrupt_line(self):
+        handle(self.nw, {"cmd": "add", "domain": "a.com"})
+        with open(self.paths.ledger, "a") as f:
+            f.write("not json at all\n")
+        handle(self.nw, {"cmd": "add", "domain": "b.com"})
+        reply = handle(self.nw, {"cmd": "log"})
+        self.assertTrue(reply["ok"])
+        added = [e.get("domain") for e in reply["entries"]
+                if e.get("kind") == "added"]
+        self.assertEqual(added, ["a.com", "b.com"])
+
+    def test_never_emits_token_hash(self):
+        ledger.record(self.paths.ledger, "breach", targets=["hosts"])
+        ledger.record(self.paths.ledger, "delivered",
+                      token_hash=hashlib.sha256(b"secret").hexdigest())
+        reply = handle(self.nw, {"cmd": "log"})
+        self.assertTrue(reply["ok"])
+        for entry in reply["entries"]:
+            self.assertNotIn("token_hash", entry)
+        # And it really was on record -- proof this was stripped, not merely
+        # absent from this particular ledger.
+        self.assertTrue(any("token_hash" in e for e in ledger.read(self.paths.ledger)))
+
+
 if __name__ == "__main__":
     unittest.main()

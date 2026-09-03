@@ -16,7 +16,7 @@ import time
 
 from . import ladder, ledger
 from .blocklist import InvalidDomain
-from .daemon import BlocklistFull
+from .daemon import DEFAULT_INTERVAL_SECONDS, BlocklistFull
 
 
 def handle(nw, request, peer_is_root=False):
@@ -40,6 +40,20 @@ def handle(nw, request, peer_is_root=False):
         reply = {"ok": True}
         reply.update(nw.status())
         return reply
+    if cmd == "log":
+        # Read-only and unprivileged, like status and list. The ledger is
+        # world-readable already; this is just a structured view of it for a
+        # panel to draw, not a new way to learn anything -- which is exactly
+        # why token_hash is stripped below rather than passed through. It is
+        # a hash, not a token, but a display surface has no reason to carry
+        # even that.
+        limit = request.get("limit", 40)
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            limit = 40
+        entries = ledger.read(nw.paths.ledger)[-limit:] if limit else []
+        return {"ok": True,
+                "entries": [{k: v for k, v in entry.items() if k != "token_hash"}
+                           for entry in entries]}
     if cmd == "enforce":
         close = bool(request.get("close_window"))
         if close and not peer_is_root:
@@ -270,7 +284,7 @@ def _serve_once(nw, server, last, interval):
     return last
 
 
-def serve(nw, interval=30):
+def serve(nw, interval=DEFAULT_INTERVAL_SECONDS):
     # Before the socket, deliberately. Enforcement does not depend on the
     # control channel and must not be hostage to it: if makedirs or bind fails,
     # the managed files have already been repaired once.
