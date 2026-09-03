@@ -65,4 +65,19 @@ systemctl enable blackwall-netwatch.service
 # process on the new code. The wall never comes down, it only comes back newer.
 systemctl restart blackwall-netwatch.service 2>/dev/null ||
   systemctl kill --signal=TERM blackwall-netwatch.service
-systemctl --no-pager --lines=5 status blackwall-netwatch.service
+
+# Wait for it to come back before reporting anything. The kill returns the
+# instant the signal is delivered and Restart=always takes a couple of seconds,
+# so a status printed here shows the OLD process dying and never the new one
+# running: "activating (auto-restart)" over "code=killed, signal=TERM", which is
+# what a SUCCESSFUL install looks like and reads exactly like a failed one.
+for _ in $(seq 1 40); do
+  [[ $(systemctl show blackwall-netwatch.service -P ActiveState) == active ]] && break
+  sleep 0.25
+done
+systemctl --no-pager --lines=0 status blackwall-netwatch.service || true
+
+# What the operator actually wants to know: not that a process exists, but that
+# the wall is up and what it currently holds.
+echo
+netwatchctl status || true
