@@ -333,7 +333,7 @@ Item {
             id: brand
             anchors.verticalCenter: parent.verticalCenter
             anchors.left: parent.left
-            width: Math.min(320, parent.width * 0.34)
+            width: Math.min(300, parent.width * 0.30)
             height: 46
             monoFamily: root.monoFamily
             clock: root.clock
@@ -343,36 +343,40 @@ Item {
             power: root.powerAt(0)
           }
 
-          Text {
-            anchors.left: brand.right
-            anchors.leftMargin: 16
-            anchors.bottom: brand.bottom
-            anchors.bottomMargin: 2
-            text: "BLACKWALL MONITOR"
-            font.family: root.monoFamily
-            font.pixelSize: 10
-            font.letterSpacing: 3
-            color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
-                           root.netwatchInk.b, 0.55)
-            opacity: root.powerAt(1)
-          }
-
-          // A carrier between the title and the link state. It is the header's
-          // share of the motion, and it stops dead when the daemon does.
-          StationConduit {
-            clock: root.clock
+          // The centre group is centred on the header, not hung off the end
+          // of the mark. Anchoring it to brand.right put it wherever the
+          // wordmark's box happened to end -- which is not where the wordmark
+          // ends, because the box is wider than the glyphs it fits inside it.
+          // The result read as two things placed at no particular offset from
+          // anything, which is exactly what it was.
+          Column {
+            id: centre
+            anchors.horizontalCenter: parent.horizontalCenter
             anchors.verticalCenter: parent.verticalCenter
-            anchors.left: brand.right
-            anchors.leftMargin: 24
-            anchors.right: link.left
-            anchors.rightMargin: 24
-            anchors.verticalCenterOffset: -12
-            height: 16
-            flow: "across"
-            lanes: 1
-            speed: root.daemonAnswering ? 1.6 : 0.15
-            power: root.powerAt(1)
-            inkColor: root.netwatchInk
+            width: Math.min(300, parent.width * 0.30)
+            spacing: 5
+
+            StationIdent {
+              width: parent.width
+              height: 15
+              clock: root.clock
+              // Reading stops when there is nothing to hear from.
+              sweepSeconds: root.daemonAnswering ? 3.4 : 26.0
+              power: root.powerAt(1)
+              inkColor: root.netwatchInk
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: "BLACKWALL MONITOR"
+              font.family: root.monoFamily
+              font.pixelSize: 10
+              font.letterSpacing: 3
+              color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
+                             root.netwatchInk.b, 0.55)
+              opacity: root.powerAt(1)
+            }
           }
 
           Text {
