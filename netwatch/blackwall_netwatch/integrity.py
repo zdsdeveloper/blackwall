@@ -96,9 +96,36 @@ def unit_intact(unit_path, source_path):
     return not _has_dropins(unit_path)
 
 
-def weakened(hosts_path, domains, policy_path, unit_path, unit_source):
+def promised_domains(entries):
+    """Every domain the ledger says was added.
+
+    The blocklist is the daemon's working copy; this is the record. Nothing
+    removes a domain because there is no removal, so a domain that was added and
+    is no longer in the blocklist did not leave by any route the daemon offers.
+    """
+    promised = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") != "added":
+            continue
+        domain = entry.get("domain")
+        if isinstance(domain, str) and domain:
+            promised.add(domain)
+    return promised
+
+
+def unblocked_domains(entries, domains):
+    """Promised domains that are no longer in the blocklist."""
+    return sorted(promised_domains(entries) - set(domains))
+
+
+def weakened(hosts_path, domains, policy_path, unit_path, unit_source,
+             ledger_entries=()):
     """Reasons the wall is weaker than it should be. Empty means intact."""
     reasons = []
+    removed = unblocked_domains(ledger_entries, domains)
+    if removed:
+        reasons.append("blocklist: %d domain(s) removed (%s)" % (
+            len(removed), removed[0]))
     missing = missing_sinks(hosts_path, domains)
     if missing:
         reasons.append("hosts: %d of %d sink lines missing (%s)" % (

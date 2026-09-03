@@ -129,6 +129,25 @@ class TestWeakened(unittest.TestCase):
                 "Enabled": True, "Locked": True, "SomethingNew": 1}}}, f)
         self.assertTrue(any("DNS" in r or "DoH" in r for r in self.reasons()))
 
+    def test_a_domain_removed_from_the_blocklist_is_a_weakening(self):
+        entries = [{"kind": "added", "domain": "gone.com"}]
+        reasons = integrity.weakened(self.hosts, [], self.policy, self.unit,
+                                     self.source, ledger_entries=entries)
+        self.assertTrue(any("blocklist" in r for r in reasons))
+
+    def test_a_domain_still_present_is_not(self):
+        entries = [{"kind": "added", "domain": "a.com"}]
+        self.assertEqual(
+            integrity.weakened(self.hosts, ["a.com"], self.policy, self.unit,
+                               self.source, ledger_entries=entries), [])
+
+    def test_no_ledger_means_no_blocklist_reason(self):
+        self.assertEqual(self.reasons(), [])
+
+    def test_a_malformed_added_entry_is_skipped(self):
+        entries = ["junk", {"kind": "added"}, {"kind": "added", "domain": 3}]
+        self.assertEqual(integrity.unblocked_domains(entries, []), [])
+
 
 if __name__ == "__main__":
     unittest.main()

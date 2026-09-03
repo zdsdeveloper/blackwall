@@ -418,6 +418,51 @@ class TestNetWatch(unittest.TestCase):
             daemon.MAX_DOMAINS = original
         self.assertEqual(self.nw.domains(), ["a.com", "b.com"])
 
+    def test_deleting_a_line_from_the_blocklist_is_a_breach(self):
+        # The blocklist used to define what "intact" meant, so editing it
+        # redefined the promise instead of breaking it.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        with open(self.paths.blocklist, "w") as f:
+            f.write("")
+        result = self.nw.enforce()
+        self.assertEqual(result["verdict"], "breach")
+        self.assertTrue(any("blocklist" in r for r in result["reasons"]))
+        # Restored within the same cycle, so the next one finds nothing
+        # missing and the reason clears on its own -- one deletion is one
+        # breach, not one per cycle it takes to notice.
+        self.nw.enforce()
+        breaches = [e for e in ledger.read(self.paths.ledger)
+                    if e["kind"] == "breach"]
+        self.assertEqual(len(breaches), 1)
+
+    def test_a_deleted_domain_is_put_back(self):
+        # Append-only permits appends, so the removal does not survive a cycle.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        with open(self.paths.blocklist, "w") as f:
+            f.write("")
+        self.nw.enforce()
+        self.assertEqual(self.nw.domains(), ["a.com"])
+
+    def test_the_restored_domain_is_blocked_again_in_hosts(self):
+        self.nw.add("a.com")
+        self.nw.enforce()
+        with open(self.paths.blocklist, "w") as f:
+            f.write("")
+        self.nw.enforce()
+        self.assertIn("0.0.0.0 a.com", open(self.paths.hosts).read())
+
+    def test_restoring_does_not_file_a_second_added_entry(self):
+        # It was added once. The ledger already says so.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        with open(self.paths.blocklist, "w") as f:
+            f.write("")
+        self.nw.enforce()
+        added = [e for e in ledger.read(self.paths.ledger) if e["kind"] == "added"]
+        self.assertEqual(len(added), 1)
+
     def test_close_window_removes_the_marker(self):
         with open(self.paths.window_marker, "w") as f:
             f.write("")

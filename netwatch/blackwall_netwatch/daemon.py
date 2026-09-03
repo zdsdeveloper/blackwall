@@ -133,6 +133,21 @@ class NetWatch:
         except (OSError, ValueError):
             return []
 
+    def _append_domain(self, domain):
+        """Write one domain to the blocklist. The one writer, for add() and
+        for a restore -- the file is append-only, so this is the whole of
+        what either of them is allowed to do to it."""
+        fd = os.open(
+            self.paths.blocklist,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC,
+            0o644,
+        )
+        try:
+            os.write(fd, (domain + "\n").encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
     def add(self, raw):
         domain = blocklist.normalize(raw)
         current = self.domains()
@@ -140,16 +155,7 @@ class NetWatch:
             if len(current) >= MAX_DOMAINS:
                 raise BlocklistFull(
                     "blocklist is at its %d-domain limit" % MAX_DOMAINS)
-            fd = os.open(
-                self.paths.blocklist,
-                os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC,
-                0o644,
-            )
-            try:
-                os.write(fd, (domain + "\n").encode("utf-8"))
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            self._append_domain(domain)
             ledger.record(self.paths.ledger, "added", domain=domain)
             # The enforcement this causes is our own work, not tampering: the
             # managed files are about to differ from the blocklist because we
@@ -160,6 +166,12 @@ class NetWatch:
     def enforce(self):
         self._reap_dead_window()
         domains = self.domains()
+        # Read once, before `weakened` needs it, and reused below for
+        # `_enforced_before` and `_start_grace_available` -- there is no
+        # second or third read per cycle. `_deliver_pending` reads again
+        # later, deliberately: the rung it computes has to count the entry
+        # this cycle is about to write.
+        entries = ledger.read(self.paths.ledger)
         # Asked before the repair, because the repair is what destroys the
         # evidence: once hosts.apply has put the sink lines back, nothing on
         # disk still says they were missing a moment ago. This is the whole
@@ -167,8 +179,18 @@ class NetWatch:
         # "did the text change" but "was a protection actually missing".
         reasons = integrity.weakened(
             self.paths.hosts, domains, self.paths.zen_policy,
-            self.paths.unit_file, self.paths.unit_source)
+            self.paths.unit_file, self.paths.unit_source,
+            ledger_entries=entries)
         targets = []
+        restored = integrity.unblocked_domains(entries, domains)
+        if restored:
+            # Appending is permitted on an append-only file, which is what
+            # makes deleting a line futile rather than merely detected: it is
+            # back within the cycle, and the breach is recorded either way.
+            for domain in restored:
+                self._append_domain(domain)
+            domains = self.domains()
+            targets.append("blocklist")
         if hosts.apply(self.paths.hosts, domains):
             targets.append("hosts")
             self.flusher()
@@ -210,11 +232,10 @@ class NetWatch:
             # session tends to appear.
             self._deliver_pending()
             return {"changed": False, "verdict": None, "targets": []}
-        # Read once and used twice, for the grace and for whether this machine
-        # has ever been in a good state. _deliver_pending reads it again, but
-        # only after the entry below has landed: the rung has to count the
-        # breach being delivered.
-        entries = ledger.read(self.paths.ledger)
+        # The same read from the top of this cycle, used again here for the
+        # grace and for whether this machine has ever been in a good state.
+        # _deliver_pending reads afresh, but only after the entry below has
+        # landed: the rung has to count the breach being delivered.
         first = first and self._start_grace_available(entries)
         # Consumed unconditionally, whatever verdict wins below: a flag left
         # set outlives the enforcement it was raised for, and the next hand
@@ -469,5 +490,6 @@ class NetWatch:
             "unacknowledged": ladder.unacknowledged(entries),
             "weakened": integrity.weakened(
                 self.paths.hosts, domains, self.paths.zen_policy,
-                self.paths.unit_file, self.paths.unit_source),
+                self.paths.unit_file, self.paths.unit_source,
+                ledger_entries=entries),
         }
