@@ -13,6 +13,18 @@ import subprocess
 from . import blocklist, hosts, ledger, provenance, zenpolicy
 
 
+# The socket is 0666 by design -- anyone on this machine may add a domain -- so
+# the blocklist is a resource an unprivileged loop can grow without limit. An
+# unbounded file is read whole by domains() on every enforcement and on every
+# start, so the end state is a daemon that OOMs at boot: the wall down for good
+# and needing a root shell to repair.
+MAX_DOMAINS = 50000
+
+
+class BlocklistFull(Exception):
+    pass
+
+
 @dataclasses.dataclass(frozen=True)
 class Paths:
     blocklist: str
@@ -51,9 +63,17 @@ def flush_resolver_cache():
 
 
 class NetWatch:
-    def __init__(self, paths, flusher=flush_resolver_cache):
+    def __init__(self, paths, flusher=flush_resolver_cache,
+                 proc_dir=provenance.PROC_DIR):
         self.paths = paths
         self.flusher = flusher
+        self.proc_dir = proc_dir
+        # Set by add(), consumed by the next enforce(). An add changes the
+        # blocklist, so the enforcement it triggers finds the managed files
+        # disagreeing with it -- which is indistinguishable, to the classifier,
+        # from someone having edited them. Without this the operator blocking a
+        # site would file a breach against themselves.
+        self._applied_pending = False
         # Consecutive failed enforcement cycles. The server owns it; status
         # reports it. A wall that has stopped being repaired has to be visible
         # somewhere, or "the daemon is up" reads as "the wall is up".
@@ -72,7 +92,11 @@ class NetWatch:
 
     def add(self, raw):
         domain = blocklist.normalize(raw)
-        if domain not in self.domains():
+        current = self.domains()
+        if domain not in current:
+            if len(current) >= MAX_DOMAINS:
+                raise BlocklistFull(
+                    "blocklist is at its %d-domain limit" % MAX_DOMAINS)
             fd = os.open(
                 self.paths.blocklist,
                 os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC,
@@ -84,9 +108,14 @@ class NetWatch:
             finally:
                 os.close(fd)
             ledger.record(self.paths.ledger, "added", domain=domain)
+            # The enforcement this causes is our own work, not tampering: the
+            # managed files are about to differ from the blocklist because we
+            # just changed the blocklist. Consumed by the next enforce().
+            self._applied_pending = True
         return domain
 
     def enforce(self):
+        self._reap_dead_window()
         domains = self.domains()
         targets = []
         if hosts.apply(self.paths.hosts, domains):
@@ -97,12 +126,21 @@ class NetWatch:
             targets.append("zen_policy")
         if not targets:
             return {"changed": False, "verdict": None, "targets": []}
-        if self._enforced_before():
-            verdict = provenance.classify(
-                self.paths.window_marker, self.paths.pacman_lock
-            )
-        else:
+        # Consumed unconditionally, whatever verdict wins below: a flag left
+        # set outlives the enforcement it was raised for, and the next hand
+        # edit would be excused as our own work -- a hole in the wall.
+        applied = self._applied_pending
+        self._applied_pending = False
+        if not self._enforced_before():
+            # A machine that has never been enforced is being installed, and an
+            # install is an install even when an add is what triggered it.
             verdict = "init"
+        elif applied:
+            verdict = "applied"
+        else:
+            verdict = provenance.classify(
+                self.paths.window_marker, self.paths.pacman_lock,
+                proc_dir=self.proc_dir)
         ledger.record(self.paths.ledger, verdict, targets=targets)
         return {"changed": True, "verdict": verdict, "targets": targets}
 
@@ -111,9 +149,30 @@ class NetWatch:
         # good state. It is append-only and root-owned, so answering this
         # question dishonestly costs more than the answer is worth.
         return any(
-            e.get("kind") in ("init", "drift", "breach")
+            e.get("kind") in ("init", "applied", "drift", "breach")
             for e in ledger.read(self.paths.ledger)
         )
+
+    def _reap_dead_window(self):
+        """Keep the sanctioned transaction window honest.
+
+        A transaction that is aborted never runs its PostTransaction hook, so
+        the marker is left behind and every hand edit for the next half hour
+        reads as drift. A transaction that outlives the staleness bound has its
+        window expire underneath it, and ends in a false breach. Both are the
+        same question, asked here once: is a transaction actually still running?
+        """
+        if not os.path.exists(self.paths.window_marker):
+            return
+        alive = (os.path.exists(self.paths.pacman_lock)
+                 or provenance.transaction_alive(self.proc_dir))
+        try:
+            if alive:
+                os.utime(self.paths.window_marker, None)
+            else:
+                os.unlink(self.paths.window_marker)
+        except OSError:
+            pass
 
     def close_window(self):
         """Drop the sanctioned-transaction marker.

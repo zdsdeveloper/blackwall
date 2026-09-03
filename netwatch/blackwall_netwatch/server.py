@@ -14,6 +14,7 @@ import time
 
 from . import ledger
 from .blocklist import InvalidDomain
+from .daemon import BlocklistFull
 
 
 def handle(nw, request, peer_is_root=False):
@@ -26,6 +27,11 @@ def handle(nw, request, peer_is_root=False):
             return {"ok": True, "domain": nw.add(raw)}
         except InvalidDomain as exc:
             return {"ok": False, "error": "not a domain: %s" % exc}
+        except BlocklistFull:
+            # A refusal, not a crash: the cap exists to stop a local user
+            # filling the list, and the honest answer to the operator who hits
+            # it is that the list is full.
+            return {"ok": False, "error": "blocklist is full"}
     if cmd == "list":
         return {"ok": True, "domains": nw.domains()}
     if cmd == "status":
@@ -149,13 +155,24 @@ def _read_request(conn):
     return b"".join(chunks)
 
 
+# Commands whose handling could have changed what is enforced. Everything else
+# is a read, and a read gives the caller no reason to re-run enforcement.
+MUTATING_COMMANDS = ("add", "enforce")
+
+
 def serve_connection(nw, conn):
     """Handle one client. Never raises -- nothing a client does may reach the
-    accept loop."""
+    accept loop.
+
+    Returns True when the request could have changed enforced state, so the
+    accept loop knows whether this connection has earned an enforcement. A
+    dropped or malformed connection has not: the socket is 0666, so a bare
+    connect loop would otherwise run enforcement at full speed forever.
+    """
     try:
         raw = _read_request(conn)
         if raw is None:
-            return
+            return False
         # The read left whatever was still on its deadline as the socket
         # timeout. A client that dribbled its request for nearly the whole five
         # seconds would otherwise get a millisecond to accept the reply, and a
@@ -165,14 +182,19 @@ def serve_connection(nw, conn):
             request = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             _reply(conn, {"ok": False, "error": "malformed request"})
-            return
+            return False
         try:
             reply = handle(nw, request, _peer_is_root(conn))
         except Exception:
             reply = {"ok": False, "error": "internal error"}
         _reply(conn, reply)
+        # Asked of the request, not the reply: a refused add still went through
+        # handle(), and the cost of an unnecessary enforcement is one repair
+        # cycle, while the cost of a missed one is the wall silently down.
+        return (isinstance(request, dict)
+                and request.get("cmd") in MUTATING_COMMANDS)
     except Exception:
-        pass
+        return False
 
 
 def _serve_once(nw, server, last, interval):
@@ -187,24 +209,31 @@ def _serve_once(nw, server, last, interval):
         conn, _ = server.accept()
     except TimeoutError:
         pass
-    except OSError:
-        # ECONNABORTED, EMFILE and the rest. One lost connection is not a
+    except Exception:
+        # ECONNABORTED, EMFILE and the rest -- and MemoryError, which is not an
+        # OSError and killed this loop outright. One lost connection is not a
         # reason to stop enforcing, so this must fall through to the periodic
         # check below rather than restarting the loop -- and it pauses, because
         # an error that does not clear would otherwise spin here at full speed
         # and starve the very repair it is skipping.
         time.sleep(0.1)
     if conn is not None:
+        mutated = False
         try:
             with conn:
-                serve_connection(nw, conn)
+                mutated = bool(serve_connection(nw, conn))
         except OSError:
             # socket.close() raises -- EBADF is reachable -- and it sits
             # outside serve_connection's own guard. Hanging up on a client is
             # not a reason to stop enforcing.
             pass
-        _enforce_quietly(nw)
-        return time.monotonic()
+        # Enforcing after every connection let a connect/disconnect loop on a
+        # 0666 socket peg a core indefinitely. Enforce when the request could
+        # have changed something, or when the interval was due anyway.
+        if mutated or time.monotonic() - last >= interval:
+            _enforce_quietly(nw)
+            return time.monotonic()
+        return last
     if time.monotonic() - last >= interval:
         _enforce_quietly(nw)
         return time.monotonic()
@@ -213,18 +242,30 @@ def _serve_once(nw, server, last, interval):
 
 def serve(nw, interval=30):
     # Before the socket, deliberately. Enforcement does not depend on the
-    # control channel and must not be hostage to it: if makedirs, bind or chmod
-    # fails, the managed files have already been repaired once.
+    # control channel and must not be hostage to it: if makedirs or bind fails,
+    # the managed files have already been repaired once.
     _enforce_quietly(nw)
     path = nw.paths.socket
     os.makedirs(os.path.dirname(path) or "/", mode=0o755, exist_ok=True)
-    if os.path.exists(path):
+    # Unconditional and guarded rather than exists()-then-unlink: between the
+    # two calls the path can vanish, and the unlink that then raises would kill
+    # startup -- a daemon that does not come up is a wall that is not up.
+    try:
         os.unlink(path)
+    except OSError:
+        pass
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(path)
-    # Anyone on this machine may add a domain. Nobody, including this user, may
-    # take one away.
-    os.chmod(path, 0o666)
+    # umask around bind rather than chmod after it. Anyone on this machine may
+    # add a domain; nobody, including this user, may take one away -- and that
+    # 0666 has to be true from the instant the socket exists, with no window at
+    # the umask-derived mode and no path-based chmod to follow a symlink.
+    # 0o111 clears only the execute bits, which a socket has no use for,
+    # leaving mode 0666.
+    previous = os.umask(0o111)
+    try:
+        server.bind(path)
+    finally:
+        os.umask(previous)
     server.listen(8)
     server.settimeout(interval)
     last = time.monotonic()

@@ -31,8 +31,11 @@ def _age(path, now):
         return None
 
 
-def _transaction_alive(proc_dir):
+def transaction_alive(proc_dir=PROC_DIR):
     """Is a package manager actually running right now?
+
+    Public because the daemon asks it too, when deciding whether a transaction
+    window left lying around belongs to a transaction that still exists.
 
     pacman's lock file carries no pid, so a lock left behind by a killed
     transaction is indistinguishable from a live one by inspecting the file. On
@@ -60,7 +63,7 @@ def classify(window_marker, pacman_lock, now=None, proc_dir=PROC_DIR):
     now = time.time() if now is None else now
     lock_age = _age(pacman_lock, now)
     if lock_age is not None:
-        if lock_age <= STALE_AFTER_SECONDS or _transaction_alive(proc_dir):
+        if lock_age <= STALE_AFTER_SECONDS or transaction_alive(proc_dir):
             return "drift"
     marker_age = _age(window_marker, now)
     if marker_age is not None and marker_age <= STALE_AFTER_SECONDS:

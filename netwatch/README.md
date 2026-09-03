@@ -65,8 +65,9 @@ removal path. Add domains deliberately.
   repo is public, and `.gitignore` guards against it landing here by
   accident.
 - The event ledger (`/var/lib/blackwall/ledger.jsonl`) records what happened
-  — that a domain was added, that an enforcement ran, that a change looked
-  like drift or like a breach — as kinds and counts and timestamps only. It
+  — that a domain was added, that the wall was applied after you added one,
+  that a change looked like drift or like a breach — as kinds and counts and
+  timestamps only. It
   never records a URL, a domain you visited, or any browsing content. It's a
   record that the wall is doing its job, not a log of what's on the other
   side of it.
@@ -77,7 +78,9 @@ NetWatch tells routine system upgrades apart from someone editing a protected
 file by hand, using a pacman hook pair that marks a sanctioned transaction
 window. An upgrade that touches `/etc/hosts` or the Zen policy during that
 window is repaired silently and never recorded as a breach. A change outside
-that window is a breach, recorded in the ledger. If you're mid-upgrade and
+that window is a breach, recorded in the ledger. Blocking a site yourself is
+neither: the enforcement your own `add` causes is recorded as `applied`, because
+being flagged for using the tool as intended is not a thing this should do. If you're mid-upgrade and
 something looks off, that's expected — the hooks exist precisely so it
 resolves itself without your intervention.
 

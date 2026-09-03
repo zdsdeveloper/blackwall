@@ -3,7 +3,7 @@ import os
 import tempfile
 import time
 import unittest
-from blackwall_netwatch import daemon, ledger
+from blackwall_netwatch import daemon, ledger, provenance
 from blackwall_netwatch.daemon import NetWatch, Paths
 
 STOCK = "127.0.0.1 localhost\n"
@@ -31,7 +31,18 @@ class TestNetWatch(unittest.TestCase):
         os.makedirs(os.path.dirname(self.paths.zen_package_policy))
         with open(self.paths.zen_package_policy, "w") as f:
             json.dump({"policies": {"DisableAppUpdate": True}}, f)
-        self.nw = NetWatch(self.paths, flusher=lambda: None)
+        # An empty stand-in for /proc: with a real one, whether a test passes
+        # would depend on whether the machine running it happens to be in the
+        # middle of a pacman transaction. Tests that need a live package
+        # manager build one under here.
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc)
+        self.nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc)
+
+    def make_proc_alive(self, comm="pacman"):
+        os.makedirs(os.path.join(self.proc, "4242"), exist_ok=True)
+        with open(os.path.join(self.proc, "4242", "comm"), "w") as f:
+            f.write(comm + "\n")
 
     def test_starts_empty(self):
         self.assertEqual(self.nw.domains(), [])
@@ -88,6 +99,11 @@ class TestNetWatch(unittest.TestCase):
         self.nw.enforce()
         os.unlink(self.paths.zen_policy)
         with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        # The lock as well as the marker: a window is only honoured now if a
+        # transaction is actually still running behind it, and a real pacman
+        # holds db.lck for the whole of one.
+        with open(self.paths.pacman_lock, "w") as f:
             f.write("")
         result = self.nw.enforce()
         self.assertEqual(result["verdict"], "drift")
@@ -174,6 +190,80 @@ class TestNetWatch(unittest.TestCase):
             f.write(json.dumps({"at": 1}) + "\n")
             f.write(json.dumps({"at": 2, "kind": "breach"}) + "\n")
         self.assertEqual(self.nw.status()["breaches"], 1)
+
+    def test_adding_a_domain_is_never_a_breach(self):
+        # An add changes the blocklist, so the enforcement it triggers finds the
+        # managed files disagreeing with it -- indistinguishable, to the
+        # classifier, from a pair of hands. Before the fix the second and every
+        # later add filed a breach against the operator for the ordinary act of
+        # blocking a site, which in a later phase locks their screen. That is
+        # the failure most likely to make this tool abandoned.
+        verdicts = []
+        for domain in ("a.com", "b.com", "c.com"):
+            self.nw.add(domain)
+            verdicts.append(self.nw.enforce()["verdict"])
+        self.assertEqual(verdicts, ["init", "applied", "applied"])
+        kinds = [e.get("kind") for e in ledger.read(self.paths.ledger)]
+        self.assertEqual(kinds.count("breach"), 0)
+
+    def test_an_add_does_not_blind_the_classifier_to_a_hand_edit(self):
+        # The other half of it: the excuse is spent by the enforcement its own
+        # add caused, so the very next hand edit is still seen for what it is.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        self.nw.add("b.com")
+        self.assertEqual(self.nw.enforce()["verdict"], "applied")
+        with open(self.paths.hosts, "w") as f:
+            f.write(STOCK)
+        self.assertEqual(self.nw.enforce()["verdict"], "breach")
+        breaches = [e for e in ledger.read(self.paths.ledger)
+                    if e.get("kind") == "breach"]
+        self.assertEqual(len(breaches), 1)
+
+    def test_reap_removes_a_window_with_no_transaction_behind_it(self):
+        # An aborted transaction -- Ctrl-C, a failed download, a bad signature
+        # -- never runs PostTransaction, so the marker outlives it and every
+        # hand edit for the next half hour is excused as drift.
+        with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        self.nw._reap_dead_window()
+        self.assertFalse(os.path.exists(self.paths.window_marker))
+
+    def test_reap_refreshes_the_window_of_a_long_running_transaction(self):
+        # A large -Syu can outlast the staleness bound, and a window that
+        # expires underneath a transaction still running ends a routine upgrade
+        # in a false breach.
+        self.nw.add("a.com")
+        self.nw.enforce()
+        stale = time.time() - (provenance.STALE_AFTER_SECONDS + 60)
+        with open(self.paths.window_marker, "w") as f:
+            f.write("")
+        os.utime(self.paths.window_marker, (stale, stale))
+        self.make_proc_alive("pacman")
+        self.nw._reap_dead_window()
+        self.assertTrue(os.path.exists(self.paths.window_marker))
+        self.assertGreater(os.stat(self.paths.window_marker).st_mtime, stale + 60)
+        os.unlink(self.paths.zen_policy)
+        self.assertEqual(self.nw.enforce()["verdict"], "drift")
+
+    def test_add_refuses_to_grow_the_blocklist_past_the_cap(self):
+        # The cap is reached by lowering it rather than by writing 50000 real
+        # domains: what is being tested is the refusal, not the number. Without
+        # a cap any local user can grow the file through the 0666 socket until
+        # domains() cannot read it, and the daemon then OOMs on every start.
+        original = daemon.MAX_DOMAINS
+        daemon.MAX_DOMAINS = 2
+        try:
+            self.nw.add("a.com")
+            self.nw.add("b.com")
+            with self.assertRaises(daemon.BlocklistFull):
+                self.nw.add("c.com")
+            # A domain already on the list adds nothing, so a full list must
+            # not turn the idempotent re-add into an error.
+            self.assertEqual(self.nw.add("a.com"), "a.com")
+        finally:
+            daemon.MAX_DOMAINS = original
+        self.assertEqual(self.nw.domains(), ["a.com", "b.com"])
 
     def test_close_window_removes_the_marker(self):
         with open(self.paths.window_marker, "w") as f:

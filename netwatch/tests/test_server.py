@@ -6,7 +6,7 @@ import time
 import unittest
 from blackwall_netwatch.daemon import NetWatch, Paths
 from blackwall_netwatch.server import handle
-from blackwall_netwatch import ledger, server
+from blackwall_netwatch import daemon, ledger, server
 
 
 def paths_in(d):
@@ -30,7 +30,10 @@ class TestHandle(unittest.TestCase):
         # flusher stubbed for the same reason TestServeConnection stubs it: run
         # as root -- entirely plausible for a root daemon -- the enforce tests
         # below would otherwise shell out to the live resolvectl.
-        self.nw = NetWatch(paths_in(self.dir), flusher=lambda: None)
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc)
+        self.nw = NetWatch(
+            paths_in(self.dir), flusher=lambda: None, proc_dir=self.proc)
 
     def test_add_returns_the_normalised_domain(self):
         reply = handle(self.nw, {"cmd": "add", "domain": "https://WWW.A.com/"})
@@ -82,6 +85,10 @@ class TestHandle(unittest.TestCase):
     def test_enforce_without_the_flag_leaves_the_marker(self):
         with open(self.nw.paths.window_marker, "w") as f:
             f.write("")
+        # And the lock, so the window belongs to a transaction that still
+        # exists: enforce() now reaps a window with nothing running behind it.
+        with open(self.nw.paths.pacman_lock, "w") as f:
+            f.write("")
         handle(self.nw, {"cmd": "enforce"})
         self.assertTrue(os.path.exists(self.nw.paths.window_marker))
 
@@ -96,6 +103,20 @@ class TestHandle(unittest.TestCase):
     def test_malformed_request_is_refused(self):
         self.assertFalse(handle(self.nw, {})["ok"])
         self.assertFalse(handle(self.nw, {"cmd": "add"})["ok"])
+
+    def test_a_full_blocklist_is_refused_not_raised(self):
+        # The cap is reached by lowering it rather than by writing 50000 real
+        # domains: what is being tested is the refusal, not the number. An
+        # exception escaping here would reach serve_connection's generic guard
+        # and tell the operator "internal error".
+        original = daemon.MAX_DOMAINS
+        daemon.MAX_DOMAINS = 0
+        try:
+            reply = handle(self.nw, {"cmd": "add", "domain": "a.com"})
+        finally:
+            daemon.MAX_DOMAINS = original
+        self.assertFalse(reply["ok"])
+        self.assertIn("full", reply["error"])
 
 
 class _Exploding:
@@ -180,6 +201,16 @@ class _FakeConn:
         self.sent += data
 
 
+class _CtxConn(_FakeConn):
+    """A fake connection usable in `with conn:`, as a real socket is."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
 class _BrokenConn(_FakeConn):
     def sendall(self, data):
         raise BrokenPipeError("peer went away")
@@ -235,7 +266,13 @@ class TestPeerIsRoot(unittest.TestCase):
 
 
 class _Sentinel(Exception):
-    """Not an OSError, so it escapes the loop body and bounds the drive."""
+    """Raised once the listener has given out everything it was going to.
+
+    It no longer *escapes* _serve_once -- the accept guard is deliberately
+    broad enough to catch MemoryError, so it catches this too -- so the drive
+    stops on the listener's `done` flag instead. The exception is kept only so
+    that a listener asked for more than it has does something loud.
+    """
 
 
 class _FailingListener:
@@ -245,10 +282,12 @@ class _FailingListener:
         self.error = error
         self.limit = limit
         self.accepts = 0
+        self.done = False
 
     def accept(self):
         self.accepts += 1
         if self.accepts > self.limit:
+            self.done = True
             raise _Sentinel()
         raise self.error
 
@@ -277,10 +316,12 @@ class _OneConnectionListener:
     def __init__(self, conn):
         self.conn = conn
         self.accepts = 0
+        self.done = False
 
     def accept(self):
         self.accepts += 1
         if self.accepts > 1:
+            self.done = True
             raise _Sentinel()
         return self.conn, None
 
@@ -313,11 +354,10 @@ class TestAcceptLoopKeepsEnforcing(unittest.TestCase):
     def _drive(self, listener, nw, iterations):
         last = time.monotonic()
         for _ in range(iterations):
-            try:
-                # interval=0: every non-connection turn is due for enforcement,
-                # so "did it reach the periodic branch" needs no waiting.
-                last = server._serve_once(nw, listener, last, 0)
-            except _Sentinel:
+            # interval=0: every non-connection turn is due for enforcement,
+            # so "did it reach the periodic branch" needs no waiting.
+            last = server._serve_once(nw, listener, last, 0)
+            if listener.done:
                 break
 
     def test_a_persistent_accept_error_still_reaches_the_periodic_enforce(self):
@@ -353,7 +393,10 @@ class TestServeConnection(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         with open(os.path.join(self.dir, "hosts"), "w") as f:
             f.write("127.0.0.1 localhost\n")
-        self.nw = NetWatch(paths_in(self.dir), flusher=lambda: None)
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(self.proc)
+        self.nw = NetWatch(
+            paths_in(self.dir), flusher=lambda: None, proc_dir=self.proc)
 
     def test_a_peer_that_hangs_up_mid_reply_does_not_raise(self):
         # The socket is 0666 by design, so connect-then-disconnect is ordinary.
@@ -380,6 +423,68 @@ class TestServeConnection(unittest.TestCase):
         conn = _FakeConn(flood)
         server.serve_connection(self.nw, conn)
         self.assertFalse(json.loads(conn.sent.decode("utf-8"))["ok"])
+
+    def test_add_and_enforce_report_that_state_may_have_changed(self):
+        # The accept loop uses this to decide whether the connection has earned
+        # an enforcement; see TestServeOnceEnforcementBudget for why.
+        for request in (b'{"cmd": "add", "domain": "a.com"}\n',
+                        b'{"cmd": "enforce"}\n'):
+            self.assertTrue(
+                server.serve_connection(self.nw, _FakeConn([request])), request)
+
+    def test_reads_and_failures_report_no_change(self):
+        # Including the two ways a connection produces no request at all: a
+        # bare connect loop is the cheapest thing an unprivileged user can do.
+        for chunks in ([b'{"cmd": "list"}\n'],
+                       [b'{"cmd": "status"}\n'],
+                       [b"{ not json\n"],
+                       []):
+            self.assertFalse(
+                server.serve_connection(self.nw, _FakeConn(chunks)), chunks)
+
+
+class TestServeOnceEnforcementBudget(unittest.TestCase):
+    """Enforcing after every connection let a connect loop peg a core.
+
+    The socket is 0666 by design, so `while true; do socat - UNIX-CONNECT:...;
+    done` is something any local user can run, and it drove full-speed
+    enforcement forever.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        with open(os.path.join(self.dir, "hosts"), "w") as f:
+            f.write("127.0.0.1 localhost\n")
+        proc = os.path.join(self.dir, "proc")
+        os.makedirs(proc)
+        self.nw = NetWatch(
+            paths_in(self.dir), flusher=lambda: None, proc_dir=proc)
+        self.calls = []
+        self.original = server._enforce_quietly
+        server._enforce_quietly = lambda nw: self.calls.append(1)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        server._enforce_quietly = self.original
+
+    def _turn(self, request):
+        # A long interval, just reset: the periodic branch is not due, so any
+        # enforcement on this turn came from the connection itself.
+        last = time.monotonic()
+        listener = _OneConnectionListener(_CtxConn([request]))
+        return last, server._serve_once(self.nw, listener, last, 3600)
+
+    def test_a_read_only_connection_does_not_trigger_enforcement(self):
+        last, returned = self._turn(b'{"cmd": "status"}\n')
+        self.assertEqual(self.calls, [])
+        # And the periodic clock was not reset by it, so a flood of reads
+        # cannot postpone the next scheduled enforcement either.
+        self.assertEqual(returned, last)
+
+    def test_a_mutating_connection_triggers_enforcement(self):
+        _, returned = self._turn(b'{"cmd": "add", "domain": "a.com"}\n')
+        self.assertEqual(len(self.calls), 1)
+        self.assertIsNotNone(returned)
 
 
 if __name__ == "__main__":

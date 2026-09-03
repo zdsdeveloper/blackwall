@@ -1,6 +1,10 @@
 [Unit]
 Description=NetWatch - Blackwall integrity daemon
 After=local-fs.target
+# Without this, systemd's default start limit puts the unit in failed
+# state after five rapid failures and leaves it there: the wall down
+# permanently, needing a hand to bring it back. Retry forever instead.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -8,6 +12,10 @@ ExecStart=/usr/local/bin/blackwall-netwatch
 Restart=always
 RestartSec=2
 RuntimeDirectory=blackwall
+# systemd removes /run/blackwall when the service stops, taking the
+# pacman transaction marker with it. A restart mid-upgrade would then
+# read a routine system update as tampering.
+RuntimeDirectoryPreserve=yes
 RuntimeDirectoryMode=0755
 StateDirectory=blackwall
 StateDirectoryMode=0755

@@ -88,17 +88,28 @@ def apply(path, domains):
         # carry U+FFFD, which a non-utf-8 locale encoding would refuse to write.
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(desired)
+            # On the descriptor we already hold, not on the path: a path-based
+            # chmod is a second lookup that a symlink planted in between could
+            # redirect. Before the fsync, so the mode is durable with the data.
+            os.fchmod(f.fileno(), mode)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, mode)
         os.rename(tmp, path)
-        dir_fd = os.open(directory, os.O_RDONLY | os.O_CLOEXEC)
+        # O_DIRECTORY: without it this would silently fsync a regular file if
+        # `directory` ever turned out not to be one, and the rename would not
+        # actually be on disk.
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
     except BaseException:
-        if os.path.exists(tmp):
+        # Guarded in its own right: an unlink that raises here would replace the
+        # real failure with a stray OSError about a temp file nobody asked
+        # about, and the reason enforcement broke would be lost.
+        try:
             os.unlink(tmp)
+        except OSError:
+            pass
         raise
     return True
