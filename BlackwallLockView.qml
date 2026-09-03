@@ -27,6 +27,12 @@ Item {
   property bool releasing: false
   property real releaseProgress: 0
 
+  // The still of the desktop the wall is taking, and whether to run the tear.
+  // Empty or false means come up as the wall has always come up.
+  property url takeoverSource: ""
+  property bool takeoverArmed: false
+  signal takeoverFinished()
+
   readonly property string releasePhaseName: Model.releasePhase(releaseProgress)
   readonly property real glitchBoost: releasing ? Model.glitchBoost(releaseProgress) : 1
   readonly property real rippleBoost: releasing ? Model.rippleBoost(releaseProgress) : 1
@@ -297,4 +303,21 @@ Item {
       opacity: 0.18 * (1 - parent.shutting)
     }
   }
+
+  // ---- the takeover -------------------------------------------------------
+  //
+  // Over everything, because it is the screen being taken rather than another
+  // layer of the wall. Inside the tear it draws nothing at all, so what shows
+  // through the hole is the wall above -- already up, already breathing,
+  // waiting to be uncovered.
+  TakeoverView {
+    id: takeover
+    anchors.fill: parent
+    source: root.takeoverSource
+
+    onFinished: root.takeoverFinished()
+
+    Component.onCompleted: if (root.takeoverArmed) takeover.begin()
+  }
+
 }
