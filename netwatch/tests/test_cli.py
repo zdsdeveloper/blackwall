@@ -116,3 +116,58 @@ class TestLogCLI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReadReply(unittest.TestCase):
+    """Reading one newline-terminated frame off the socket.
+
+    A single recv() is not a read. A stream socket hands back whatever has
+    arrived and the caller gets the rest by asking again, so the old
+    `s.recv(65536)` was correct only while every reply happened to fit in one
+    buffer and arrive in one piece. It stopped being correct the moment the
+    blocklist grew: at 1328 domains the status reply carries domains_list,
+    blocked_live and the probe results, comes to roughly 80KB, and arrives in
+    two chunks. The client parsed the first fragment, failed, and reported
+    that the daemon had sent something unreadable -- while the daemon was
+    answering perfectly.
+
+    A socketpair, not the daemon's socket: this exercises the framing without
+    touching anything outside the test.
+    """
+
+    def frame(self, payload):
+        import socket as _socket
+        a, b = _socket.socketpair()
+        with a, b:
+            b.sendall(payload)
+            b.shutdown(_socket.SHUT_WR)
+            return CLI._read_reply(a)
+
+    def test_a_small_reply_still_works(self):
+        self.assertEqual(json.loads(self.frame(b'{"ok": true}\n'))["ok"], True)
+
+    def test_a_reply_larger_than_one_buffer_is_read_whole(self):
+        # The regression. Comfortably more than the 65536 the client used to
+        # read, and more than one recv will return.
+        big = {"ok": True, "domains_list": ["d%05d.example" % i
+                                            for i in range(6000)]}
+        payload = (json.dumps(big) + "\n").encode("utf-8")
+        self.assertGreater(len(payload), 65536)
+        got = json.loads(self.frame(payload))
+        self.assertEqual(len(got["domains_list"]), 6000)
+
+    def test_it_stops_at_the_frame_rather_than_waiting_for_the_peer(self):
+        # The newline ends the reply. Waiting for EOF instead would hang
+        # against a daemon that keeps the connection open.
+        import socket as _socket
+        a, b = _socket.socketpair()
+        with a, b:
+            b.sendall(b'{"ok": true}\n')
+            # b is deliberately left open.
+            self.assertEqual(json.loads(CLI._read_reply(a))["ok"], True)
+
+    def test_a_peer_that_hangs_up_early_does_not_hang_the_client(self):
+        # Whatever arrived is returned and the JSON parse decides. Blocking
+        # for ever on a truncated frame would be worse than a clear failure.
+        got = self.frame(b'{"ok": tr')
+        self.assertEqual(got, '{"ok": tr')

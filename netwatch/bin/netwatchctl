@@ -19,13 +19,49 @@ def call(request):
     with s:
         try:
             s.sendall((json.dumps(request) + "\n").encode("utf-8"))
-            raw = s.recv(65536).decode("utf-8")
+            raw = _read_reply(s)
         except OSError as exc:
             sys.exit("netwatch did not answer (%s)" % exc)
         try:
             return json.loads(raw)
         except ValueError:
             sys.exit("netwatch sent an unreadable reply")
+
+
+# The reply is one newline-terminated frame, and it has to be read as one.
+#
+# A single recv() is not a read: a stream socket hands back whatever has
+# arrived, and the caller gets the rest by asking again. That was survivable
+# while status was small, and stopped being survivable the moment the
+# blocklist grew -- at 1328 domains the reply carries domains_list,
+# blocked_live and the probe results and comes to about 80KB across two
+# recv calls, so the first one returned a truncated fragment that could not
+# be parsed. The daemon was answering correctly the whole time; the client
+# was hanging up halfway through listening.
+#
+# The server has always terminated its frames with a newline. This reads to
+# it, which is what makes the reply size stop mattering.
+MAX_REPLY_BYTES = 64 * 1024 * 1024
+
+
+def _read_reply(s):
+    chunks = []
+    total = 0
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            # The daemon hung up. Whatever arrived is all there is; let the
+            # JSON parse decide whether it was a whole frame.
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if chunk.endswith(b"\n"):
+            break
+        if total > MAX_REPLY_BYTES:
+            # A ceiling so a wedged or misbehaving daemon cannot make the
+            # client eat memory without bound. Far above any real reply.
+            sys.exit("netwatch sent an oversized reply")
+    return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 def main():
