@@ -612,6 +612,32 @@ class TestServeOnceEnforcementBudget(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertIsNotNone(returned)
 
+    def test_an_add_is_never_made_to_wait(self):
+        # `add` changed the blocklist, so the managed files are wrong until a
+        # cycle runs. Even immediately after one, it goes at once -- deferring
+        # it would leave a domain the operator just blocked reachable.
+        for _ in range(5):
+            self._turn(b'{"cmd": "add", "domain": "a.com"}\n')
+        self.assertEqual(len(self.calls), 5)
+
+    def test_asking_to_enforce_in_a_loop_costs_one_cycle(self):
+        # The socket is 0666 and `enforce` is on it, so anyone local can ask
+        # for a re-check in a loop. Nothing is pending on such a request, so it
+        # waits out the floor rather than driving a full cycle every time --
+        # reading /etc/hosts and checking the unit, the policy and the ledger
+        # for 1328 domains, as fast as the loop can ask.
+        for _ in range(20):
+            self._turn(b'{"cmd": "enforce"}\n')
+        self.assertEqual(self.calls, [])
+
+    def test_an_enforce_request_still_works_once_the_floor_has_passed(self):
+        # Floored, not ignored: the pacman hook asks this way at the end of a
+        # transaction and must be answered.
+        listener = _OneConnectionListener(_CtxConn([b'{"cmd": "enforce"}\n']))
+        stale = time.monotonic() - server.MIN_MUTATION_INTERVAL_SECONDS - 1
+        server._serve_once(self.nw, listener, stale, 3600)
+        self.assertEqual(len(self.calls), 1)
+
 
 def _token_hash(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()

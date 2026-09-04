@@ -194,6 +194,22 @@ def _read_request(conn):
 # is a read, and a read gives the caller no reason to re-run enforcement.
 MUTATING_COMMANDS = ("add", "enforce")
 
+# The floor between two enforcement cycles triggered by a request.
+#
+# The socket is 0666 by design -- anyone local may add a domain -- and `enforce`
+# is on that list. Without a floor, a process asking to enforce in a loop drives
+# a full cycle every time round: reading /etc/hosts, checking the unit and the
+# policy, and rewriting 5312 sink lines for 1328 domains. That is a local
+# unprivileged process pegging the daemon indefinitely, and a buggy script does
+# it as readily as a hostile one.
+#
+# A second is short enough that adding a domain still takes effect at once in
+# any normal use, and long enough that a spin loop costs one cycle a second
+# instead of thousands. Anything a burst outruns is picked up by the periodic
+# cycle regardless: the blocklist is written before enforcement is asked for,
+# so the change is never lost, only applied on the next pass.
+MIN_MUTATION_INTERVAL_SECONDS = 1.0
+
 
 def serve_connection(nw, conn):
     """Handle one client. Never raises -- nothing a client does may reach the
@@ -229,8 +245,12 @@ def serve_connection(nw, conn):
         # Asked of the request, not the reply: a refused add still went through
         # handle(), and the cost of an unnecessary enforcement is one repair
         # cycle, while the cost of a missed one is the wall silently down.
-        mutated = (isinstance(request, dict)
-                   and request.get("cmd") in MUTATING_COMMANDS)
+        # The command itself, not just whether it mutates: `add` changes state
+        # and must apply at once, while `enforce` only asks for a re-check and
+        # can be asked for in a loop by anyone local. They are rate-limited
+        # differently in _serve_once.
+        asked = request.get("cmd") if isinstance(request, dict) else None
+        mutated = asked if asked in MUTATING_COMMANDS else None
         try:
             reply = handle(nw, request, _peer_is_root(conn))
         except Exception:
@@ -262,10 +282,10 @@ def _serve_once(nw, server, last, interval):
         # and starve the very repair it is skipping.
         time.sleep(0.1)
     if conn is not None:
-        mutated = False
+        mutated = None
         try:
             with conn:
-                mutated = bool(serve_connection(nw, conn))
+                mutated = serve_connection(nw, conn)
         except OSError:
             # socket.close() raises -- EBADF is reachable -- and it sits
             # outside serve_connection's own guard. Hanging up on a client is
@@ -273,8 +293,18 @@ def _serve_once(nw, server, last, interval):
             pass
         # Enforcing after every connection let a connect/disconnect loop on a
         # 0666 socket peg a core indefinitely. Enforce when the request could
-        # have changed something, or when the interval was due anyway.
-        if mutated or time.monotonic() - last >= interval:
+        # have changed something -- but no more often than the floor, or
+        # `enforce` in a loop does the same thing through the front door -- or
+        # when the interval was due anyway.
+        since = time.monotonic() - last
+        # `add` changed the blocklist, so the managed files are wrong until a
+        # cycle runs: no floor, exactly as before. `enforce` asks for a
+        # re-check and nothing is pending on it, so it waits out the floor --
+        # which is what stops a local process asking for one in a loop from
+        # driving the daemon at full speed through the front door.
+        if (mutated == "add"
+                or (mutated == "enforce" and since >= MIN_MUTATION_INTERVAL_SECONDS)
+                or since >= interval):
             _enforce_quietly(nw)
             return time.monotonic()
         return last
