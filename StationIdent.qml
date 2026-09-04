@@ -36,7 +36,13 @@ Item {
   }
 
   function rebuild() {
-    if (root.width <= 0) return
+    if (root.width <= 0) {
+      // Cleared rather than left alone. Bailing out kept the bars from the
+      // last size, and since the strip does not clip, a collapsed one went on
+      // drawing them across whatever was beside it.
+      root.bars = []
+      return
+    }
     var out = []
     var state = root.seed
     var x = 2

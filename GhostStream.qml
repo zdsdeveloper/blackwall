@@ -71,6 +71,10 @@ Item {
 
   ListModel { id: swarm }
 
+  // How many are on the column right now. Exposed so the spawn cap and the
+  // reaping can be asserted from outside; nothing on the surface reads it.
+  readonly property alias count: swarm.count
+
   // A ListModel rather than an array of records, so hitting one ghost changes
   // that ghost instead of rebuilding every delegate on the column.
   function spawn() {

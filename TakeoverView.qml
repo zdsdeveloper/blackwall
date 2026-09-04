@@ -48,6 +48,12 @@ Item {
   readonly property bool ready: shot.status === Image.Ready
 
   function begin() {
+    // Idempotent. Beginning a sequence that is already under way restarted it
+    // and signalled `finished` a second time, and the handler on the other end
+    // deletes the still -- harmless as it happens, but a component that
+    // signals completion twice for one run is one that cannot be reasoned
+    // about from the outside.
+    if (root.running) return
     root.progress = 0
     root.running = true
     // Belt and braces, for the same reason the lock itself has one.
