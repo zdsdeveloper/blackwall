@@ -41,6 +41,16 @@ the wall showing through the gap rather than fading in over it. The still is
 kept in `XDG_RUNTIME_DIR`, which is memory, and deleted as soon as the tear is
 done with it. Without a runtime directory there is no capture and no sequence.
 
+To watch it without locking yourself out for thirty seconds:
+
+```bash
+tools/preview-takeover.sh
+```
+
+That captures the desktop and loops the real sequence in an ordinary window
+until you close it. Nothing it does touches the lock, the daemon, or any
+state.
+
 The sting over it is synthesised, not sampled — `tools/make-takeover-sound.py`
 builds `sounds/takeover.mp3` from oscillators, and is committed so the sound
 can be changed rather than merely replaced.
