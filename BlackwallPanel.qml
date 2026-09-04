@@ -65,6 +65,42 @@ Item {
     return String(p.uniq || p.id || "")
   }
 
+  // ---- the operator's own clock -------------------------------------------
+  //
+  // The service singleton owns the activity clock. The station is a second
+  // view onto it, not a second copy: nothing here advances it, resets it or
+  // decides anything about it. It reads.
+  property var shell: null
+  property var service: null
+
+  // The service, however it arrived. The shell assigns `service` when the
+  // panel loads, which happens once and only helps if the service was mounted
+  // first; resolving through the shell as well means a panel that loaded ahead
+  // of it still finds it. QML tracks the property reads inside serviceFor(),
+  // so this re-evaluates if the services are ever remounted.
+  readonly property var svc: root.service
+    || (root.shell && typeof root.shell.serviceFor === "function"
+        ? root.shell.serviceFor("zds.blackwall") : null)
+
+  // Whose post this is. The mouse names them where it is recognised; the
+  // account name is the fallback, because a post with nobody's name on it is
+  // not a post.
+  readonly property string operatorName: {
+    if (root.agentName !== "") return root.agentName
+    var user = Quickshell.env("USER")
+    return user ? String(user) : "operator"
+  }
+
+  // What the activity clock reads at this instant, recomputed off the station
+  // clock rather than off the service's fifteen-second tick -- otherwise the
+  // countdown sits still for fifteen seconds and then drops fifteen at once.
+  // See the note on Model.activityReadout.
+  readonly property var vigil: root.svc
+    ? Model.activityReadout(root.svc.activityConfig, root.svc.activityState,
+                            root.svc.activityLastTick, root.epoch * 1000,
+                            root.svc.awayFromPost)
+    : Model.activityReadout(null, null, 0, 0, false)
+
   // True while the power-on sequence has the surface.
   property bool booting: false
 
@@ -219,7 +255,14 @@ Item {
       alert: root.everAnswered && root.report.ledger_sealed === false },
     { label: "reading hardware token",
       value: root.agentToken !== "" ? root.agentToken.toUpperCase() : "NONE",
-      alert: false }
+      alert: false },
+    // Last, because it is the one line about the person rather than the wall,
+    // and the greeting the sequence ends on follows straight out of it.
+    { label: "operator continuity",
+      value: root.vigil.enabled === true
+        ? Model.formatRemaining(root.vigil.activeMs) + " AT THE POST"
+        : "NOT COUNTING",
+      alert: root.vigil.due === true }
   ]
 
   function powerAt(slot) {
@@ -597,7 +640,8 @@ Item {
           id: consoleFrame
           anchors.bottom: parent.bottom
           anchors.left: parent.left
-          anchors.right: parent.right
+          anchors.right: post.left
+          anchors.rightMargin: 18
           height: Math.max(140, Math.min(300, Math.round(parent.height * 0.27)))
           title: "CONSOLE"
           annotation: root.logEntries.length + " ENTRIES"
@@ -620,6 +664,87 @@ Item {
             lineSize: 11
             power: root.powerAt(9)
             inkColor: root.ink
+          }
+        }
+
+        // ---- the operator ---------------------------------------------------
+        //
+        // Beside the console rather than inside it. The console is a ledger of
+        // things the daemon did, in the order it did them; this is a reading
+        // that changes every second and is about the person rather than the
+        // wall. Threading one through the other would have made both harder to
+        // read than either is alone.
+        //
+        // Same row, though, because they are the two halves of "what is
+        // happening right now" -- and NetWatch's cold colours rather than the
+        // wall's red, the one place below the header rule that takes them. The
+        // wall is what is being contained. This is the post, watching its own
+        // operator, and it should not look like the thing behind the glass.
+
+        Column {
+          id: post
+          anchors.bottom: parent.bottom
+          anchors.right: parent.right
+          width: Math.max(232, Math.min(320, Math.round(parent.width * 0.28)))
+          height: consoleFrame.height
+          spacing: 10
+
+          readonly property real cell: (height - spacing) / 2
+
+          StationFrame {
+            clock: root.clock
+            width: parent.width
+            height: post.cell
+            title: "POST"
+            annotation: root.operatorName.toUpperCase()
+            font.family: root.monoFamily
+            power: root.powerAt(8)
+            inkColor: root.netwatchInk
+            // Holding still is what this panel does for three hours at a time;
+            // a charge running its top edge would be the liveliest thing on
+            // the surface and mean nothing.
+            live: root.vigil.enabled === true
+            padding: 10
+
+            StationVigil {
+              anchors.fill: parent
+              clock: root.clock
+              readout: root.vigil
+              font.family: root.monoFamily
+              inkColor: root.netwatchInk
+              glowColor: root.netwatchGlow
+              power: root.powerAt(8)
+            }
+          }
+
+          StationFrame {
+            clock: root.clock
+            width: parent.width
+            height: post.cell
+            title: "STAND DOWN"
+            annotation: {
+              if (root.vigil.enabled !== true) return "OFF"
+              if (root.vigil.due === true) return "DUE"
+              if (root.vigil.away === true) return "HELD"
+              return root.vigil.untilBreakMinutes + " MIN"
+            }
+            alert: root.vigil.due === true
+            font.family: root.monoFamily
+            power: root.powerAt(9)
+            inkColor: root.netwatchInk
+            live: root.vigil.enabled === true && root.vigil.away !== true
+            padding: 10
+
+            StationStandDown {
+              anchors.fill: parent
+              clock: root.clock
+              caret: root.caretOn
+              readout: root.vigil
+              font.family: root.monoFamily
+              inkColor: root.netwatchInk
+              glowColor: root.netwatchGlow
+              power: root.powerAt(9)
+            }
           }
         }
 

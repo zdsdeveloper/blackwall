@@ -157,6 +157,16 @@ Item {
   readonly property int activeMinutes:
     Math.floor((Number(root.activityState.activeMs) || 0) / 60000)
 
+  // Whether the compositor says nobody is at the machine.
+  //
+  // Exposed because the station draws this clock, and "the count is held" is a
+  // different thing to tell the operator than "the count is running" -- one of
+  // them means the stretch on screen is going up as they read it. Reported as
+  // false when nothing is counting, so an idle monitor that is switched off
+  // cannot make the station say they walked away.
+  readonly property bool awayFromPost:
+    root.activityConfig.enabled === true && idleWatch.isIdle === true
+
   IdleMonitor {
     id: idleWatch
     enabled: root.activityConfig.enabled === true

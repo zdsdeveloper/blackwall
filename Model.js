@@ -829,3 +829,70 @@ function activityDecision(cfg, state, lastPromptMs, nowMs) {
   if (last > 0 && now - last < cfg.snoozeMinutes * 60000) return none
   return { action: "suggest", activeMinutes: minutes }
 }
+
+// What the activity clock reads right now, for a surface that shows it.
+//
+// The service advances the clock every fifteen seconds, which is the right
+// cadence for deciding something and the wrong one for showing it: a countdown
+// that sits still for fifteen seconds and then drops fifteen at once reads as
+// broken. This projects the state forward to `nowMs` exactly the way the next
+// tick will -- the same jump guard included, so a machine that slept does not
+// show an hour at the desk that nobody spent there.
+//
+// Pure, and it advances nothing. The state it is handed stays the service's;
+// this only says what that state means at this instant.
+function activityReadout(cfg, state, lastTickMs, nowMs, isAway) {
+  var out = {
+    enabled: false,
+    away: false,
+    activeMs: 0,
+    activeMinutes: 0,
+    breakAfterMs: 0,
+    untilBreakMs: 0,
+    untilBreakMinutes: 0,
+    // 0..1 of the stretch spent. What a filling bar draws.
+    fraction: 0,
+    due: false,
+    idleMs: 0,
+    // While away: how much longer before being away counts as the break and
+    // the stretch goes back to zero.
+    resetInMs: 0
+  }
+  if (!cfg || cfg.enabled !== true) return out
+  out.enabled = true
+  out.away = isAway === true
+
+  var activeMs = Number(state && state.activeMs) || 0
+  var idleMs = Number(state && state.idleMs) || 0
+  var last = Number(lastTickMs) || 0
+  var now = Number(nowMs) || 0
+  var since = last > 0 ? now - last : 0
+  if (!(since > 0)) since = 0
+
+  var resetMs = Math.max(0, Number(cfg.idleResetMinutes) || 0) * 60000
+
+  if (since > 60000) {
+    // The tick's own reading of a gap this size: the machine was not being
+    // worked at, whatever the idle monitor says about this instant.
+    idleMs += since
+    activeMs = 0
+  } else if (out.away) {
+    idleMs += since
+    if (resetMs > 0 && idleMs >= resetMs) activeMs = 0
+  } else {
+    activeMs += since
+    idleMs = 0
+  }
+
+  var afterMs = Math.max(0, Number(cfg.breakAfterMinutes) || 0) * 60000
+  out.activeMs = activeMs
+  out.activeMinutes = Math.floor(activeMs / 60000)
+  out.idleMs = idleMs
+  out.resetInMs = Math.max(0, resetMs - idleMs)
+  out.breakAfterMs = afterMs
+  out.untilBreakMs = Math.max(0, afterMs - activeMs)
+  out.untilBreakMinutes = Math.ceil(out.untilBreakMs / 60000)
+  out.fraction = afterMs > 0 ? clamp(activeMs / afterMs, 0, 1) : 0
+  out.due = afterMs > 0 && activeMs >= afterMs
+  return out
+}

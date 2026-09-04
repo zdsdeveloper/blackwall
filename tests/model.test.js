@@ -7,11 +7,12 @@
 // evaluates the rest in a VM context, which is enough to reach every function
 // in it without Qt, a compositor, or a running shell.
 //
-// This exists because the alternative was nothing. Qt Quick Test needs
-// `qmltestrunner`, which is not installed here, and a TestCase run under `qml6`
-// silently executes no assertions at all -- a deliberately failing test exits 0.
-// The declarative half of the QML (layout, colour, the countdown) still rests on
-// somebody looking at it. The logic does not have to.
+// This exists because the alternative was nothing without a compositor. It is
+// no longer the whole suite: the QML half runs under `qmltestrunner` (see
+// tests/run-qml-tests.sh), which does live here after all -- in the Qt bindir
+// rather than on PATH, which is why this file once claimed it was not
+// installed. What still rests on somebody looking at it is the part neither
+// runner can judge: layout, colour, and whether the thing reads.
 
 const fs = require("fs");
 const path = require("path");
@@ -591,6 +592,80 @@ check("suggest: and that one does snooze",
       Model.activityDecision(soft, long, justAsked, justAsked + MIN).action, "none");
 check("suggest: speaking again once the snooze has passed",
       Model.activityDecision(soft, long, justAsked, justAsked + 16 * MIN).action, "suggest");
+
+// ------------------------------------------------- what the station reads off it
+//
+// The station draws this thirty times a second off a state the service only
+// advances every fifteen. Everything here is about that gap.
+
+const READ = (over, state, lastTick, now, away) =>
+  Model.activityReadout(ACT(Object.assign({ enabled: true, breakAfterMinutes: 180 }, over || {})),
+                        state, lastTick, now, away);
+
+const OFF = Model.parseActivity({ breakAfterMinutes: 180 });
+check("readout: off when breaks are off",
+      Model.activityReadout(OFF, { activeMs: MIN }, 0, 0, false).enabled, false);
+check("readout: and reads zero rather than the banked count",
+      Model.activityReadout(OFF, { activeMs: 90 * MIN }, 0, 0, false).activeMs, 0);
+
+// The whole reason this function exists: between ticks it keeps counting.
+check("readout: projects the seconds since the last tick",
+      READ({}, { activeMs: 60 * MIN, idleMs: 0 }, 1000, 1000 + 9000).activeMs, 60 * MIN + 9000);
+check("readout: with no tick yet it shows what is banked",
+      READ({}, { activeMs: 60 * MIN, idleMs: 0 }, 0, 5000).activeMs, 60 * MIN);
+check("readout: a clock that went backwards does not subtract",
+      READ({}, { activeMs: 60 * MIN, idleMs: 0 }, 9000, 1000).activeMs, 60 * MIN);
+
+// The same guard the tick applies. A machine that slept did not spend that
+// time at the desk, and showing four banked hours after a suspend would be a
+// lie in the direction that matters.
+check("readout: a jump past a minute is a machine that slept",
+      READ({}, { activeMs: 170 * MIN, idleMs: 0 }, 1000, 1000 + 3 * 3600000).activeMs, 0);
+check("readout: and it is counted as time away",
+      READ({}, { activeMs: 170 * MIN, idleMs: 0 }, 1000, 1000 + 3 * 3600000).idleMs, 3 * 3600000);
+
+// Away holds the count where it is rather than advancing it.
+check("readout: away does not add to the stretch",
+      READ({}, { activeMs: 60 * MIN, idleMs: 0 }, 1000, 1000 + 9000, true).activeMs, 60 * MIN);
+check("readout: away adds to the time away",
+      READ({}, { activeMs: 60 * MIN, idleMs: 0 }, 1000, 1000 + 9000, true).idleMs, 9000);
+check("readout: away long enough is the break, and the stretch is gone",
+      READ({ idleResetMinutes: 15 }, { activeMs: 60 * MIN, idleMs: 14 * MIN }, 1000,
+           1000 + 61000, true).activeMs, 0);
+check("readout: and until then it says how much longer counts",
+      READ({ idleResetMinutes: 15 }, { activeMs: 60 * MIN, idleMs: 10 * MIN }, 0, 0, true).resetInMs,
+      5 * MIN);
+check("readout: back at the desk clears the time away",
+      READ({}, { activeMs: 60 * MIN, idleMs: 4 * MIN }, 1000, 1000 + 1000, false).idleMs, 0);
+
+// The countdown itself.
+check("readout: how long until the break is owed",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 170 * MIN, idleMs: 0 }, 0, 0).untilBreakMs, 10 * MIN);
+check("readout: rounded up, so 9m01s left never reads as 9",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 170 * MIN + 59000, idleMs: 0 }, 0, 0).untilBreakMinutes, 10);
+check("readout: the stretch as a fraction, for the bar",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 90 * MIN, idleMs: 0 }, 0, 0).fraction, 0.5);
+check("readout: not due before the hour is up",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 179 * MIN, idleMs: 0 }, 0, 0).due, false);
+check("readout: due on the minute it is owed",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 180 * MIN, idleMs: 0 }, 0, 0).due, true);
+check("readout: past due, the countdown floors at zero rather than going negative",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 400 * MIN, idleMs: 0 }, 0, 0).untilBreakMs, 0);
+check("readout: and the bar stays full rather than overflowing",
+      READ({ breakAfterMinutes: 180 }, { activeMs: 400 * MIN, idleMs: 0 }, 0, 0).fraction, 1);
+
+check("readout: junk state does not crash",
+      READ({}, null, 0, 0).activeMs, 0);
+check("readout: junk config is simply off",
+      Model.activityReadout(null, { activeMs: 90 * MIN }, 0, 0, false).enabled, false);
+
+// It agrees with the thing that acts on it. A station saying "due" while the
+// service declines to demand would be the readout lying about the rule.
+const dueState = { activeMs: 180 * MIN, idleMs: 0 };
+check("readout: due agrees with the decision that acts",
+      [READ({}, dueState, 0, 0).due,
+       Model.activityDecision(ACT({ enabled: true, breakAfterMinutes: 180 }), dueState, 0, 1000).action],
+      [true, "demand"]);
 
 // -----------------------------------------------------------------------------
 

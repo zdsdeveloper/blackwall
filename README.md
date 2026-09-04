@@ -414,6 +414,18 @@ second monitor should not read the list out to the room; the console and the
 resolver panel redact under the same flag, since every add writes the domain
 into the log in plain text.
 
+Beside the console are the two panels that are not about the wall at all.
+**POST** carries the operator's name and how long they have been continuously
+at the machine, its bar filling across the stretch; **STAND DOWN** carries what
+is left before a break is owed, its bar emptying as the other one fills. Both
+read the activity clock the shell already keeps — the station is a second view
+onto it, not a second copy, and nothing on this surface can reset it or put it
+off. While the compositor reports nobody at the machine the count is held
+rather than running, and both panels say so instead of quietly freezing.
+
+The count is a session count: it starts from zero when the shell starts, and
+the shell restarts on a theme change or a plugin edit.
+
 ### The resolver sweep
 
 Every five minutes the daemon asks the system resolver where each contained
