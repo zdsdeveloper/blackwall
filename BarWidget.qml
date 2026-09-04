@@ -59,12 +59,18 @@ Panel {
 
   // Presets, the Custom row, and the persistence toggle share one cursor
   // index space: 0..n-1 presets, then Custom, then the toggle.
-  readonly property int menuItemCount: presets.length + 3
+  readonly property int menuItemCount: presets.length + 4
   readonly property int customIndex: presets.length
   readonly property int persistIndex: presets.length + 1
-  readonly property int stationIndex: presets.length + 2
+  readonly property int soundIndex: presets.length + 2
+  readonly property int stationIndex: presets.length + 3
 
   readonly property bool persistAcrossReboot: service ? service.persistAcrossReboot === true : true
+  readonly property bool soundEnabled: service ? service.soundEnabled === true : true
+
+  function toggleSound() {
+    if (root.service) root.service.setSoundEnabled(!root.soundEnabled)
+  }
 
   function togglePersist() {
     if (root.service && typeof root.service.setPersistAcrossReboot === "function")
@@ -100,6 +106,7 @@ Panel {
     if (cursorIndex < presets.length) request(presets[cursorIndex])
     else if (cursorIndex === customIndex) enterCustomStage()
     else if (cursorIndex === persistIndex) togglePersist()
+    else if (cursorIndex === soundIndex) toggleSound()
     else if (cursorIndex === stationIndex) openStation()
   }
 
@@ -244,6 +251,20 @@ Panel {
           }
 
           PanelSeparator { foreground: root.barForeground }
+
+          Toggle {
+            width: parent.width
+            label: "Sound"
+            description: root.soundEnabled
+              ? "The wall has a voice while it is up."
+              : "Silent — the wall comes up without a sound."
+            checked: root.soundEnabled
+            hasCursor: root.cursorIndex === root.soundIndex
+            foreground: root.barForeground
+            fontFamily: root.bar.fontFamily
+            onClicked: root.toggleSound()
+            onHovered: function(on) { if (on) root.cursorIndex = root.soundIndex }
+          }
 
           Toggle {
             width: parent.width

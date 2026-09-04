@@ -112,6 +112,15 @@ Item {
   //
   // Telling those two apart is what `bootId` is for; see resumeFromState().
   property bool persistAcrossReboot: true
+
+  // Whether the wall makes any noise at all. A drone that loops for the length
+  // of a lock needs a way off.
+  property bool soundEnabled: true
+
+  // Round-tripped rather than used here: the panel reads it, but this is what
+  // writes the file, and a key this file does not carry is a key this file
+  // deletes the next time anything is saved.
+  property var agents: ({})
   property bool configLoaded: false
 
   // What a breach challenge asks to be typed. Owned by the same config file,
@@ -562,7 +571,9 @@ Item {
     var parsed = Model.parseConfig(raw)
     root.persistAcrossReboot = parsed.persistAcrossReboot
     root.configuredSoundPath = parsed.soundPath
+    root.soundEnabled = parsed.soundEnabled
     root.challengePhrase = parsed.challengePhrase
+    root.agents = parsed.agents
     root.configLoaded = true
     root.maybeResume()
     root.refreshSound()
@@ -583,7 +594,13 @@ Item {
       version: 1,
       persistAcrossReboot: root.persistAcrossReboot,
       soundPath: root.configuredSoundPath,
-      challengePhrase: root.challengePhrase
+      soundEnabled: root.soundEnabled,
+      challengePhrase: root.challengePhrase,
+      // Not read by this file, and written by it regardless. `agents` was
+      // added to the parser and not to here, which meant the next save of any
+      // other setting silently deleted whoever was on file -- the exact
+      // failure the note above describes, made again.
+      agents: root.agents
     }, null, 2) + "\n")
   }
 
@@ -600,6 +617,15 @@ Item {
     root.persistAcrossReboot = next
     writeConfig()
     logEvent("persistAcrossReboot=" + next)
+    return next
+  }
+
+  function setSoundEnabled(value) {
+    var next = !!value
+    if (next === root.soundEnabled && root.configLoaded) return next
+    root.soundEnabled = next
+    writeConfig()
+    logEvent("soundEnabled=" + next)
     return next
   }
 
@@ -697,7 +723,8 @@ Item {
         active: root.holding
         releasing: root.releasing
         releaseProgress: root.releaseProgress
-        soundSource: root.soundUrl
+        soundEnabled: root.soundEnabled
+        soundSource: root.soundEnabled ? root.soundUrl : ""
 
         // Assigned, not bound. claimAudio() reads audioClaims while it
         // increments it, so as a binding QML captures audioClaims as a
@@ -761,6 +788,19 @@ Item {
       return root.persistAcrossReboot ? "true" : "false"
     }
 
+    function soundOn(): string {
+      return root.soundEnabled ? "on" : "off"
+    }
+
+    function setSoundOn(value: string): string {
+      var text = String(value || "").trim().toLowerCase()
+      if (text !== "on" && text !== "off")
+        return "usage: blackwall setSoundOn <on|off>"
+      // Safe while locked, like setPersist: it changes what the wall sounds
+      // like, not whether it is there.
+      return root.setSoundEnabled(text === "on") ? "on" : "off"
+    }
+
     function setPersist(value: string): string {
       var text = String(value || "").trim().toLowerCase()
       if (text !== "true" && text !== "false")
@@ -816,7 +856,7 @@ Item {
 
     // The same ambience the lock plays, from the same resolution: an explicit
     // soundPath, else whatever is in sounds/, else silence.
-    soundSource: root.soundUrl
+    soundSource: root.soundEnabled ? root.soundUrl : ""
 
     onAnswered: function (token) {
       challengeView.open = false

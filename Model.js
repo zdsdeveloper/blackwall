@@ -110,6 +110,7 @@ function parseConfig(raw) {
   var defaults = {
     persistAcrossReboot: true,
     soundPath: "",
+    soundEnabled: true,
     challengePhrase: DEFAULT_CHALLENGE_PHRASE,
     agents: {}
   }
@@ -123,6 +124,10 @@ function parseConfig(raw) {
       persistAcrossReboot: parsed.persistAcrossReboot !== false,
       // Empty means "look in sounds/". An explicit path wins over it.
       soundPath: String(parsed.soundPath || ""),
+      // Anything that is not literally false leaves the sound on, which is
+      // the behaviour the plugin shipped with and the one that fails safe:
+      // a config that will not parse should not silently mute the wall.
+      soundEnabled: parsed.soundEnabled !== false,
       // Falls back rather than ever landing empty, for the same reason.
       challengePhrase: String(parsed.challengePhrase || "").trim()
         || DEFAULT_CHALLENGE_PHRASE,

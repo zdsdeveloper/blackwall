@@ -62,6 +62,10 @@ Item {
 
   // True on exactly one surface. See Service.claimAudio().
   property bool audioLead: false
+  // Whether this surface may make any sound at all. Governs the ambience,
+  // the takeover sting and the release sting alike -- one switch, so the
+  // wall is either silent or it is not.
+  property bool soundEnabled: true
 
   readonly property real audioVolume: 0.3
 
@@ -103,6 +107,28 @@ Item {
     active: root.releasing
     pressure: root.facePressure
     fontFamily: root.monoFamily
+  }
+
+  // The release sting: the seal giving, and what is left after it.
+  //
+  // Shaped to the reconnection sequence rather than laid over it -- the sound
+  // climbs while the wall is under strain, breaks where the shatter is, and
+  // ends in space rather than on a note. Fired once when the sequence starts,
+  // by the lead surface only.
+  MediaPlayer {
+    id: releaseSting
+    source: Qt.resolvedUrl("audio/release.mp3")
+    audioOutput: AudioOutput { volume: 0.62 }
+    onErrorOccurred: function (err, str) {
+      // The wall still has to open. A sting that will not play is not a
+      // reason for anything else to stop.
+      console.warn("blackwall release sound:", str)
+    }
+  }
+
+  onReleasingChanged: {
+    if (root.releasing && root.audioLead && root.soundEnabled)
+      releaseSting.play()
   }
 
   // Ambience. Only the lead surface builds a player, and only when the file
@@ -314,7 +340,7 @@ Item {
     id: takeover
     anchors.fill: parent
     source: root.takeoverSource
-    audioLead: root.audioLead
+    audioLead: root.audioLead && root.soundEnabled
 
     onFinished: root.takeoverFinished()
 

@@ -79,9 +79,9 @@ check("state: missing bootId reads as unknown", Model.parseState('{"deadline":99
 // ---------------------------------------------------------------- the config
 
 const DEFAULT = Model.DEFAULT_CHALLENGE_PHRASE;
-check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT, agents: {} });
-check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT, agents: {} });
-check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", challengePhrase: DEFAULT, agents: {} });
+check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {} });
+check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {} });
+check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {} });
 check("config: persist can be turned off", Model.parseConfig('{"persistAcrossReboot":false}').persistAcrossReboot, false);
 // Anything that is not literally false persists, because persisting is the
 // behaviour the plugin shipped with and the safer default.
@@ -302,6 +302,16 @@ check("agent: a hostile device does not shadow a configured one",
       Model.identifyAgent([{ id: "1111:2222", uniq: "__proto__", name: "hostile" },
                            { id: "046d:405e", uniq: "18-c3-2d-77", name: "M720" }],
                           { "18-c3-2d-77": "ZAMIL" }), "ZAMIL");
+
+// The sound toggle. Off by choice, never off by accident.
+check("sound: on by default", Model.parseConfig("").soundEnabled, true);
+check("sound: can be turned off", Model.parseConfig('{"soundEnabled":false}').soundEnabled, false);
+check("sound: absent leaves it on", Model.parseConfig('{"soundPath":"/x.mp3"}').soundEnabled, true);
+// Anything that is not literally false leaves it on: a config that will not
+// parse cleanly must not silently mute the wall.
+check("sound: a junk value leaves it on", Model.parseConfig('{"soundEnabled":"no"}').soundEnabled, true);
+check("sound: null leaves it on", Model.parseConfig('{"soundEnabled":null}').soundEnabled, true);
+check("sound: malformed config leaves it on", Model.parseConfig("{oh no").soundEnabled, true);
 
 // -----------------------------------------------------------------------------
 
