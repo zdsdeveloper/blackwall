@@ -44,10 +44,28 @@ Item {
   property int remaining: 0
   property bool answered: false
 
+  // One clock for the whole surface, thirty steps a second, the same way the
+  // station does it. Everything that moves here is a function of it; nothing
+  // runs an animation of its own.
+  //
+  // It only ticks while the demand is up, which is at most a minute and a
+  // half, so this never costs anything when the window is not there.
+  property real clock: 0
+  property double clockOrigin: 0
+
+  Timer {
+    interval: 33
+    repeat: true
+    running: root.demanding
+    onTriggered: root.clock = (Date.now() - root.clockOrigin) / 1000
+  }
+
   onDemandingChanged: {
     if (!root.demanding) return
     root.answered = false
     root.remaining = root.graceSeconds
+    root.clockOrigin = Date.now()
+    root.clock = 0
     grace.restart()
   }
 
@@ -105,20 +123,64 @@ Item {
       opacity: 0.86
     }
 
-    Rectangle {
+    // The field, at a fraction of the station's. This is a demand, not a
+    // spectacle: it should read as a surface that is alive rather than as
+    // something happening. Coarse and slow, and barely there at all.
+    GlitchBackground {
+      anchors.fill: parent
+      running: root.demanding
+      externalClock: root.clock
+      intensity: 0.30
+      grainScale: 0.55
+      stepRate: 12
+      artifacts: 0
+      opacity: 0.5
+    }
+
+    StationFrame {
       anchors.centerIn: parent
-      width: Math.min(620, parent.width - 80)
-      height: card.implicitHeight + 56
-      color: "#04070a"
-      border.width: 1
-      border.color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
-                            root.netwatchInk.b, 0.34)
+      width: Math.min(660, parent.width - 80)
+      height: card.implicitHeight + 78
+      title: "NETWATCH"
+      annotation: root.preview ? "PREVIEW" : "STAND DOWN"
+      inkColor: root.netwatchInk
+      paperColor: "#04070a"
+      font.family: root.monoFamily
+      clock: root.clock
+      padding: 26
 
       Column {
         id: card
         anchors.centerIn: parent
-        width: parent.width - 56
+        width: parent.width
         spacing: 10
+
+        // The mark itself, not the word set in a bold font. Front and
+        // centre, because this is the post speaking and it should look like
+        // it -- and it carries its own slow charge down the rows, which is
+        // most of the movement on this surface.
+        StationWordmark {
+          anchors.horizontalCenter: parent.horizontalCenter
+          width: Math.min(360, parent.width * 0.72)
+          height: 48
+          monoFamily: root.monoFamily
+          clock: root.clock
+          topColor: root.netwatchGlow
+          footColor: root.netwatchInk
+        }
+
+        Item { width: 1; height: 4 }
+
+        // A rule that fills in rather than being drawn. Once, on arrival.
+        Rectangle {
+          anchors.horizontalCenter: parent.horizontalCenter
+          width: parent.width * Math.min(1, root.clock / 0.7)
+          height: 1
+          color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
+                         root.netwatchInk.b, 0.25)
+        }
+
+        Item { width: 1; height: 6 }
 
         Rectangle {
           visible: root.preview
@@ -137,24 +199,6 @@ Item {
             color: root.warnColor
           }
         }
-
-        Text {
-          text: "NETWATCH  ──  STAND DOWN"
-          font.family: root.monoFamily
-          font.pixelSize: 12
-          font.bold: true
-          font.letterSpacing: 4
-          color: root.netwatchInk
-        }
-
-        Rectangle {
-          width: parent.width
-          height: 1
-          color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
-                         root.netwatchInk.b, 0.25)
-        }
-
-        Item { width: 1; height: 6 }
 
         Text {
           text: "TIME TO TAKE A BREAK"
@@ -273,7 +317,13 @@ Item {
           font.family: root.monoFamily
           font.pixelSize: 10
           font.letterSpacing: 1
+          // Steady until the last quarter minute, then a slow breath. Not a
+          // flash: the point is that time is passing, not that you are being
+          // shouted at.
           color: root.remaining <= 15 ? root.warnColor : Qt.rgba(1, 1, 1, 0.34)
+          opacity: root.remaining <= 15
+            ? 0.65 + 0.35 * (0.5 - 0.5 * Math.cos(root.clock * 3.4))
+            : 1
         }
       }
     }
