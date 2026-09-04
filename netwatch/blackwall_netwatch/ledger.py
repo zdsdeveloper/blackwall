@@ -40,7 +40,44 @@ def record(path, kind, **fields):
     return entry
 
 
+# The last read of each ledger, keyed by what the file looked like when it was
+# taken: {path: (size, mtime_ns, entries)}.
+#
+# The ledger only grows -- that is the whole point of it -- and `read` is called
+# from nine places, including status, which a panel polls every two seconds. At
+# 2660 entries a status call already spends 58ms re-parsing a history that has
+# not changed, and nothing about that gets better: the file is append-only by
+# design, so the cost rises for ever.
+#
+# Keyed on size AND mtime, so any write invalidates it. A modification that
+# changed neither would have to be deliberate, in place, and made as root on a
+# file the kernel has been told to refuse in-place writes to.
+_CACHE = {}
+
+
+def forget(path=None):
+    """Drop the cache, for one path or all of it. Tests use this."""
+    if path is None:
+        _CACHE.clear()
+    else:
+        _CACHE.pop(path, None)
+
+
 def read(path):
+    try:
+        st = os.stat(path)
+        key = (st.st_size, st.st_mtime_ns)
+        hit = _CACHE.get(path)
+        if hit is not None and hit[0] == key:
+            # A copy: callers filter and slice what they get back, and handing
+            # out the cached list itself would let one of them mutate what
+            # every later reader sees.
+            return list(hit[1])
+    except OSError:
+        # No file, or it cannot be stated. Fall through to the read, which
+        # answers the same way it always has.
+        key = None
+
     entries = []
     try:
         # errors="replace" rather than strict: a process killed mid-write can
@@ -61,4 +98,6 @@ def read(path):
                     entries.append(entry)
     except (OSError, ValueError):
         return entries
+    if key is not None:
+        _CACHE[path] = (key, list(entries))
     return entries

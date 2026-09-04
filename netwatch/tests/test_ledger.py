@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -72,3 +73,73 @@ class TestLedger(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReadCache(unittest.TestCase):
+    """Repeated reads are cached on the file's size and mtime.
+
+    `read` is called from nine places, one of them status, which a panel polls
+    every two seconds -- and the ledger is append-only by design, so the cost
+    of re-parsing it rises for ever. At 2660 entries a status call was already
+    spending 58ms re-reading a history that had not changed.
+
+    The danger of caching this is far worse than the cost of not: the ladder
+    decides whether to lock the screen from these entries, so a stale read is
+    a wrong decision about someone's session. Every test below is about the
+    cache noticing a change.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "ledger.jsonl")
+        ledger.forget()
+
+    def tearDown(self):
+        ledger.forget()
+
+    def test_a_second_read_agrees_with_the_first(self):
+        ledger.record(self.path, "added", domain="a.com")
+        first = ledger.read(self.path)
+        self.assertEqual(ledger.read(self.path), first)
+
+    def test_an_append_is_seen(self):
+        # The one that matters. A cache that missed this would let the ladder
+        # act on a history that is missing the breach that just happened.
+        ledger.record(self.path, "added", domain="a.com")
+        self.assertEqual(len(ledger.read(self.path)), 1)
+        ledger.record(self.path, "breach", reasons=["unit: masked"])
+        after = ledger.read(self.path)
+        self.assertEqual(len(after), 2)
+        self.assertEqual(after[-1]["kind"], "breach")
+
+    def test_many_appends_are_each_seen(self):
+        for i in range(12):
+            ledger.record(self.path, "added", domain="d%d.com" % i)
+            self.assertEqual(len(ledger.read(self.path)), i + 1)
+
+    def test_a_file_rewritten_smaller_is_seen(self):
+        # Not reachable while the ledger is append-only, but a cache keyed on
+        # a file must notice the file being replaced.
+        for i in range(5):
+            ledger.record(self.path, "added", domain="d%d.com" % i)
+        self.assertEqual(len(ledger.read(self.path)), 5)
+        with open(self.path, "w") as f:
+            f.write(json.dumps({"kind": "ack", "at": 1}) + "\n")
+        self.assertEqual(len(ledger.read(self.path)), 1)
+
+    def test_the_caller_cannot_poison_the_cache(self):
+        # Callers filter and slice what they get. Handing out the cached list
+        # itself would let one of them change what every later reader sees.
+        ledger.record(self.path, "added", domain="a.com")
+        got = ledger.read(self.path)
+        got.append({"kind": "forged"})
+        self.assertEqual(len(ledger.read(self.path)), 1)
+
+    def test_a_missing_file_is_still_empty(self):
+        self.assertEqual(ledger.read(os.path.join(self.dir, "nope.jsonl")), [])
+
+    def test_a_missing_file_that_appears_is_seen(self):
+        missing = os.path.join(self.dir, "later.jsonl")
+        self.assertEqual(ledger.read(missing), [])
+        ledger.record(missing, "added", domain="a.com")
+        self.assertEqual(len(ledger.read(missing)), 1)
