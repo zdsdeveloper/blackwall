@@ -175,6 +175,26 @@ Item {
   // off.
   property double scheduleGapUntil: 0
 
+  // Set while a lock this scheduler asked for is still up, so the daylight can
+  // be measured from when the wall actually falls rather than from when it
+  // went up.
+  //
+  // Arming the gap at engage time counts it down through the lock, and two
+  // things then eat it. The release ceremony holds for RELEASE_MS after the
+  // timer ends -- 4.6s of a gap whose floor is 5 -- leaving four tenths of a
+  // second of daylight at the low end. And a machine that sleeps through a
+  // lock wakes with the gap long expired, so the wall drops and takes itself
+  // straight back with none at all. Both were found by review; neither is
+  // reachable once the gap starts when the lock ends.
+  property bool scheduleLockActive: false
+
+  onHoldingChanged: {
+    if (root.holding || !root.scheduleLockActive) return
+    root.scheduleLockActive = false
+    root.scheduleGapUntil = Date.now() + root.scheduleConfig.gapSeconds * 1000
+    logEvent("schedule: " + root.scheduleConfig.gapSeconds + "s of daylight")
+  }
+
   function scheduleKeyFor(entry) {
     return entry ? (entry.label + "@" + Math.floor(Date.now() / 60000 / 1440)) : ""
   }
@@ -198,7 +218,9 @@ Item {
                                       root.holding, root.scheduleGapUntil)
 
     if (call.action === "lock") {
-      root.scheduleGapUntil = call.gapUntilMs
+      // The decision hands back a gap measured from now; it is not used. The
+      // gap is armed when the wall comes down, in onHoldingChanged.
+      root.scheduleLockActive = true
       logEvent("schedule: " + call.label + " -- locking for " + call.minutes
                + " min of "
                + (root.activeWindow ? root.activeWindow.endsInMinutes : "?")
@@ -223,10 +245,14 @@ Item {
     }
 
     // Nothing to do. Forget the warning once no window is near, so the next
-    // approach warns again, and drop the gap once nothing is open so the next
-    // window starts fresh.
+    // approach warns again.
+    //
+    // The gap is deliberately NOT cleared here. Clearing it whenever no window
+    // is open let a provider withdraw its window and push it back to wipe the
+    // daylight and lock continuously -- and the same happens by accident with
+    // two windows that abut. Daylight is daylight: it expires on its own, and
+    // the most it can delay a genuine window is gapSeconds.
     if (!root.activeWindow) {
-      root.scheduleGapUntil = 0
       if (!root.nextWindow
           || root.nextWindow.inMinutes * 60 > root.scheduleConfig.warnSeconds)
         root.warnedFor = ""

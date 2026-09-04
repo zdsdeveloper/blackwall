@@ -474,6 +474,27 @@ function identifyAgent(pointers, agents) {
 // domain it understands better -- prayer times, say, which are astronomical
 // and depend on where you are.
 
+// Known limits, so they are known rather than lurking. All three were found
+// by review and all three are wall-clock consequences rather than bugs in the
+// arithmetic here:
+//
+//   * The clock going BACKWARDS extends a lock. remainingMs is deadline minus
+//     Date.now(), so an NTP correction or a manual change backwards inflates
+//     what is left. A monotonic clock would fix it, but the deadline is also
+//     persisted across reboots as wall-clock time, so that is a larger change
+//     than it looks and is not made here.
+//
+//   * DST spring-forward skips an hour, and a window contained entirely in the
+//     skipped hour never fires that day. 02:00-03:00 on the changeover, once a
+//     year, in this timezone.
+//
+//   * DST fall-back repeats an hour, so a window can be briefly re-evaluated
+//     against a time it has already seen. The capped stretches and the gap
+//     make this survivable rather than serious.
+//
+// None of them can extend a lock past maxLockMinutes at a stretch, which is
+// what the cap is for.
+
 var DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 
 // "23:30" -> 1410. Anything unparseable is -1, which never matches.
