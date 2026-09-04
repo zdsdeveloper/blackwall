@@ -225,6 +225,7 @@ Item {
       "[ -n \"$addr\" ] && hyprctl dispatch closewindow address:$addr; true"]
     closeProc.running = true
 
+    breakDemand.preview = false
     breakDemand.activeMinutes = call.activeMinutes
     breakDemand.graceSeconds = root.activityConfig.demandGraceSeconds
     breakDemand.demanding = true
@@ -236,6 +237,13 @@ Item {
     id: breakDemand
     monoFamily: "monospace"
     onChosen: function (minutes) {
+      if (breakDemand.preview) {
+        // A dry run answers and stops there. Nothing is reset, nothing is
+        // engaged, and the clock carries on exactly as it was.
+        logEvent("activity: preview answered " + minutes + " min -- discarded")
+        breakDemand.preview = false
+        return
+      }
       logEvent("activity: break of " + minutes + " min")
       // The count restarts from the break, not from when the wall comes down:
       // the break is the reset.
@@ -1151,6 +1159,17 @@ Item {
     // hours first. Safe to expose on a 0666 socket: the only thing it can do
     // is cause a break. There is no argument that shortens one, and no way to
     // call it that avoids one.
+    // The same window, with nothing behind it. Shows what a demand looks like
+    // without closing anything or taking the screen.
+    function previewBreak(): string {
+      if (root.holding) return "already behind the wall"
+      breakDemand.preview = true
+      breakDemand.activeMinutes = root.activityConfig.breakAfterMinutes
+      breakDemand.graceSeconds = root.activityConfig.demandGraceSeconds
+      breakDemand.demanding = true
+      return "preview"
+    }
+
     function demandBreak(): string {
       if (root.holding) return "already behind the wall"
       root.activityState = ({ activeMs: root.activityConfig.breakAfterMinutes * 60000,

@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import Quickshell
+import Quickshell.Wayland
 import "Model.js" as Model
 
 // The break, being taken rather than offered.
@@ -21,6 +22,14 @@ Item {
   id: root
 
   property bool demanding: false
+
+  // A dry run: the window looks and behaves exactly as it will in earnest --
+  // same grace, same countdown, same fact that every exit is a choice -- but
+  // the caller discards what is chosen and nothing is closed or locked.
+  //
+  // Marked on its face, because a preview you cannot tell apart from the real
+  // thing teaches you the wrong thing about the real thing.
+  property bool preview: false
   property int activeMinutes: 0
   property int graceSeconds: 90
   property string monoFamily: "monospace"
@@ -62,33 +71,72 @@ Item {
     }
   }
 
-  FloatingWindow {
+  // A layer surface, not a window.
+  //
+  // The first version was a FloatingWindow, and Hyprland tiled it like any
+  // other toplevel: a 560x300 demand arrived as a full-height pane wedged
+  // beside the browser. Worse than untidy -- a demand that can be tiled can be
+  // moved behind something, resized to nothing, or simply worked around.
+  //
+  // On the overlay layer it is above everything, cannot be tiled, and takes
+  // the keyboard. The same choice ChallengeView makes, for the same reason.
+  PanelWindow {
     id: win
     visible: root.demanding
-    implicitWidth: 560
-    implicitHeight: 300
-    title: "NetWatch — Stand Down"
-    color: "#04070a"
+    color: "transparent"
 
-    // Closing the window is choosing the shortest, not escaping.
-    onVisibleChanged: if (!visible && root.demanding) root.choose(Model.BREAK_CHOICES[0])
+    anchors { top: true; bottom: true; left: true; right: true }
 
-    Item {
+    WlrLayershell.namespace: "blackwall-break"
+    WlrLayershell.layer: WlrLayer.Overlay
+    // Exclusive in earnest, so it cannot be typed past. A preview only takes
+    // focus when clicked -- being unable to reach anything else for ninety
+    // seconds is a fair thing to demand of someone at hour three and a poor
+    // thing to spring on someone who asked to see what it looks like.
+    WlrLayershell.keyboardFocus: root.preview
+      ? WlrKeyboardFocus.OnDemand
+      : WlrKeyboardFocus.Exclusive
+
+    // The ground behind the card. Dim rather than opaque: what you were doing
+    // is still visible behind it, which is the point being made.
+    Rectangle {
       anchors.fill: parent
-      anchors.margins: 22
+      color: "#04070a"
+      opacity: 0.86
+    }
 
-      Rectangle {
-        anchors.fill: parent
-        color: "transparent"
-        border.width: 1
-        border.color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
-                              root.netwatchInk.b, 0.30)
-      }
+    Rectangle {
+      anchors.centerIn: parent
+      width: Math.min(620, parent.width - 80)
+      height: card.implicitHeight + 56
+      color: "#04070a"
+      border.width: 1
+      border.color: Qt.rgba(root.netwatchInk.r, root.netwatchInk.g,
+                            root.netwatchInk.b, 0.34)
 
       Column {
+        id: card
         anchors.centerIn: parent
-        width: parent.width - 40
+        width: parent.width - 56
         spacing: 10
+
+        Rectangle {
+          visible: root.preview
+          width: parent.width
+          height: 22
+          color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.14)
+          border.width: 1
+          border.color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.45)
+
+          Text {
+            anchors.centerIn: parent
+            text: "PREVIEW  ·  nothing will be closed or locked"
+            font.family: root.monoFamily
+            font.pixelSize: 10
+            font.letterSpacing: 2
+            color: root.warnColor
+          }
+        }
 
         Text {
           text: "NETWATCH  ──  STAND DOWN"
@@ -126,9 +174,12 @@ Item {
             var span = h > 0
               ? (h + (h === 1 ? " hour " : " hours ") + m + " min")
               : (m + " min")
-            return "You have been at this machine for " + span
-                 + " without a break. The wall goes up either way — "
-                 + "the only thing left to choose is for how long."
+            var body = "You have been at this machine for " + span
+                     + " without a break. The wall goes up either way — "
+                     + "the only thing left to choose is for how long."
+            return root.preview
+              ? body + "\n\nIn a preview, it does not."
+              : body
           }
           font.family: root.monoFamily
           font.pixelSize: 11
