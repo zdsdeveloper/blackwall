@@ -681,6 +681,38 @@ check("away: nor is touching things while it plays", Model.awayNow(false, true),
 check("away: an unknown answer is not treated as away",
       [Model.awayNow(undefined, undefined), Model.awayNow(null, null)], [false, false]);
 
+// The wall being up is never time at the machine. Without this the media rule
+// pointed exactly the wrong way: a voluntary lock with music on was the one
+// way to make the stretch grow while sitting in front of a wall, unable to
+// touch anything.
+check("away: the wall being up is away, whatever else is true",
+      [Model.awayNow(false, true, true), Model.awayNow(true, true, true),
+       Model.awayNow(false, false, true)], [true, true, true]);
+check("away: and the wall being down leaves the rest of the rule alone",
+      [Model.awayNow(true, true, false), Model.awayNow(true, false, false)], [false, true]);
+
+// What a lock is actually worth, driven through the clock. Nothing resets it
+// on the way in: the same gap rule everything else gets decides.
+{
+  const walled = ACT({ breakAfterMinutes: 180, idleResetMinutes: 15 });
+  const threeQuarters = { activeMs: 135 * MIN, idleMs: 0 };
+
+  // Twenty minutes locked, with music playing the whole time.
+  let long_ = threeQuarters;
+  for (let i = 0; i < 20; i++)
+    long_ = Model.activityTick(walled, long_, Model.awayNow(true, true, true), MIN);
+  check("lock: twenty minutes behind the wall is a break", long_.activeMs, 0);
+
+  // Five minutes locked. Not long enough to be a break -- but it must not add
+  // five minutes to the stretch either, which is what it did before.
+  let short_ = threeQuarters;
+  for (let i = 0; i < 5; i++)
+    short_ = Model.activityTick(walled, short_, Model.awayNow(true, true, true), MIN);
+  check("lock: five minutes behind the wall is not a break",
+        Math.floor(short_.activeMs / 60000), 135);
+  check("lock: but it does not add to the stretch either", short_.idleMs, 5 * MIN);
+}
+
 // The load-bearing one, run through the clock rather than asserted on the
 // rule. Two hours of film: no keyboard, no mouse, something playing the whole
 // time. The stretch must be two hours, not zero.
@@ -715,6 +747,20 @@ if (tickBody) {
         tickBody.includes("root.awayFromPost"), true);
   check("away: and not the raw idle flag",
         tickBody.includes("idleWatch.isIdle"), false);
+}
+
+// The wall has to reach the rule for any of that to hold.
+const awayBinding = (() => {
+  const start = serviceSrc.indexOf("readonly property bool awayFromPost:");
+  if (start < 0) return null;
+  const end = serviceSrc.indexOf("\n\n", start);
+  return end < 0 ? null : serviceSrc.slice(start, end);
+})();
+
+check("lock: the awayFromPost binding was found in Service.qml", awayBinding !== null, true);
+if (awayBinding) {
+  check("lock: the rule is told whether the wall is up",
+        awayBinding.includes("root.holding"), true);
 }
 
 // ------------------------------------------- carrying the count across a restart

@@ -451,6 +451,13 @@ playing over MPRIS counts as somebody at the machine. Only *playing*: paused
 media with nothing touched for a quarter of an hour is somebody who left the
 room with the film up.
 
+Time behind the wall is never time at the machine either, whatever is playing
+behind it — being locked out is the definition of not being able to work.
+Nothing is reset on the way in: what a lock is worth is left to the same gap
+rule, so a voluntary lock of fifteen minutes or more counts as the break it
+was, and a shorter one simply does not add to the stretch. That puts a
+voluntary lock on the same footing as the shortest break the demand offers.
+
 The cost of that, and it is the right way round: music playing to an empty desk
 reads as somebody at it, so the break comes sooner than it strictly should. A
 break that arrives early is a nuisance; a three-hour film that counts as

@@ -978,6 +978,18 @@ function restoreActivity(cfg, saved, nowMs) {
 // desk reads as somebody at it, so the break comes sooner than it strictly
 // should. A break that arrives early is a nuisance; a three hour film that
 // counts as nothing is the feature not working.
-function awayNow(isIdle, mediaPlaying) {
+function awayNow(isIdle, mediaPlaying, walled) {
+  // The wall being up is never time at the machine, whatever is playing behind
+  // it. Being locked out is the definition of not being able to work, and a
+  // voluntary lock with music on was otherwise the one way to make the stretch
+  // grow while sitting in front of a wall -- the media rule above, pointed
+  // exactly the wrong way.
+  //
+  // Nothing is reset here. What a lock is worth is left to the same gap rule
+  // everything else gets: long enough and being away was the break, short of
+  // that the time simply does not count. Which puts a voluntary lock of
+  // fifteen minutes on the same footing as the shortest break the demand
+  // offers, and that is the right place for it.
+  if (walled === true) return true
   return isIdle === true && mediaPlaying !== true
 }

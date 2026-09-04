@@ -188,7 +188,7 @@ Item {
   // cannot make the station say they walked away.
   readonly property bool awayFromPost:
     root.activityConfig.enabled === true
-    && Model.awayNow(idleWatch.isIdle, root.mediaPlaying)
+    && Model.awayNow(idleWatch.isIdle, root.mediaPlaying, root.holding)
 
   IdleMonitor {
     id: idleWatch
