@@ -161,8 +161,12 @@ Item {
         // most of the movement on this surface.
         StationWordmark {
           anchors.horizontalCenter: parent.horizontalCenter
-          width: Math.min(360, parent.width * 0.72)
-          height: 48
+          // Wide, and given enough height that the width is what limits it --
+          // otherwise the block is sized by height, comes out narrower than
+          // its box, and sits off to one side of it.
+          width: parent.width
+          height: 96
+          centred: true
           monoFamily: root.monoFamily
           clock: root.clock
           topColor: root.netwatchGlow

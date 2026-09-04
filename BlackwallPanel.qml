@@ -370,6 +370,17 @@ Item {
     implicitHeight: 860
     color: "#050102"
 
+    // Hidden until open() says otherwise, and stated rather than assumed.
+    //
+    // This line missing is the whole of the "ghost window" that has been
+    // appearing all along. The shell watches this directory and hot-reloads
+    // the plugin on any edit; a window with no `visible` of its own is created
+    // showing, so every single file save put a station on the screen. And it
+    // was black because open() had not run, so bootProgress was zero and every
+    // powerAt slot with it -- an empty window that nothing would ever close,
+    // because nothing knew it was open.
+    visible: false
+
     onVisibleChanged: if (!visible) root.requestClose()
 
     Item {

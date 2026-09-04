@@ -26,6 +26,12 @@ Item {
   // steel grey: the agency is still there, it is just not being told anything.
   property bool live: true
 
+  // Left in the station's header, where it sits beside other things; centred
+  // on a surface where it is the thing. Without this the block is drawn at
+  // whatever size fits and then pinned to the left edge of a wider item, which
+  // reads as off-centre however carefully the item itself is centred.
+  property bool centred: false
+
   readonly property int rows: Wordmark.rowCount()
 
   // Measured at a known size and scaled, the same approach the wall takes, so
@@ -57,7 +63,8 @@ Item {
   readonly property real scan: (root.clock / 9.0) % 1
 
   Column {
-    anchors.left: parent.left
+    anchors.left: root.centred ? undefined : parent.left
+    anchors.horizontalCenter: root.centred ? parent.horizontalCenter : undefined
     anchors.verticalCenter: parent.verticalCenter
     spacing: 0
 
