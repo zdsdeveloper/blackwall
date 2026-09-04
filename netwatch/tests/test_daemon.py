@@ -1218,3 +1218,34 @@ class TestSweep(unittest.TestCase):
         self.asked = []
         nw.enforce()          # nothing to repair: the quiet path
         self.assertEqual(self.asked, ["a.com"])
+
+    def test_a_sweep_that_learns_nothing_is_counted_as_a_failure(self):
+        # The one that actually happens. probe_all catches each lookup's
+        # exception itself, so a broken resolver does not raise out of the
+        # sweep -- it returns a full set of answers that say nothing at all.
+        # Counting only the raising case would have counted nothing, ever.
+        def boom(*a, **k):
+            raise RuntimeError("resolver exploded")
+        nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc,
+                      notifier=lambda *a, **k: True, resolver=boom)
+        nw.add("a.com")
+        for i in range(3):
+            nw.sweep(now=1000.0 + i * (daemon.PROBE_INTERVAL_SECONDS + 1))
+        self.assertEqual(nw.status()["probe_failures"], 3)
+
+    def test_a_sweep_that_recovers_clears_the_count(self):
+        calls = []
+
+        def flaky(host, *a, **k):
+            calls.append(host)
+            if len(calls) <= 1:
+                raise RuntimeError("first one fails")
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP,
+                     "", ("0.0.0.0", 0))]
+
+        nw = NetWatch(self.paths, flusher=lambda: None, proc_dir=self.proc,
+                      notifier=lambda *a, **k: True, resolver=flaky)
+        nw.add("a.com")
+        nw.sweep(now=1000.0)
+        nw.sweep(now=1000.0 + daemon.PROBE_INTERVAL_SECONDS + 1)
+        self.assertEqual(nw.status()["probe_failures"], 0)

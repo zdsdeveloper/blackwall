@@ -117,28 +117,53 @@ def probe(domain, resolver=None):
 
 
 def probe_all(domains, resolver=None, workers=WORKERS,
-              deadline=DEADLINE_SECONDS):
+              deadline=DEADLINE_SECONDS, pool=None):
     """Probe every name, bounded in wall-clock time.
 
     Returns {domain: state} covering every domain asked for. Anything that has
     not answered by the deadline is UNKNOWN rather than missing, so a caller
     can always index the result and a slow nameserver reads as "not known"
     instead of silently shrinking the report.
+
+    `pool` lets a long-running caller supply one executor and keep it. That
+    matters more than it looks. The deadline bounds how long this blocks, but
+    it does not stop the lookups underneath it: shutdown(wait=False) does not
+    interrupt a thread already inside getaddrinfo, and cancel_futures only
+    drops work that has not started. Measured with a resolver that never
+    answers, a fresh pool per sweep left eight threads behind every time --
+    forty-eight after six sweeps, and they only went when the resolver
+    unblocked. Sweeps are five minutes apart and a stalled lookup normally
+    gives up in well under that, so it takes a resolver wedged for longer than
+    the interval to accumulate; but nothing bounded it, and "nothing bounds
+    it" is not a property this daemon should have anywhere.
+
+    With one pool the count is capped at `workers` for the life of the
+    process. Wedged lookups occupy slots rather than spawning more, later
+    sweeps queue behind them and time out into UNKNOWN, and an all-UNKNOWN
+    sweep is what NetWatch.sweep counts as a failure -- so the resource stays
+    bounded and the symptom stays visible.
     """
     names = [d for d in domains if d]
     results = {d: UNKNOWN for d in names}
     if not names:
         return results
 
-    count = max(1, min(int(workers), len(names)))
-    try:
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=count)
-    except (OSError, ValueError):
-        # Out of threads. Everything stays UNKNOWN, which is true.
-        return results
+    own = pool is None
+    if own:
+        count = max(1, min(int(workers), len(names)))
+        try:
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=count)
+        except (OSError, ValueError):
+            # Out of threads. Everything stays UNKNOWN, which is true.
+            return results
 
+    pending = {}
     try:
-        pending = {pool.submit(probe, d, resolver): d for d in names}
+        try:
+            pending = {pool.submit(probe, d, resolver): d for d in names}
+        except RuntimeError:
+            # A shut-down or exhausted pool. Everything stays UNKNOWN.
+            return results
         try:
             for future in concurrent.futures.as_completed(pending,
                                                           timeout=deadline):
@@ -151,9 +176,14 @@ def probe_all(domains, resolver=None, workers=WORKERS,
             # Whatever did land is already in `results`; the rest stay UNKNOWN.
             pass
     finally:
-        # Do not block the enforcement loop waiting for a hung lookup. The
-        # threads are left to finish on their own.
-        pool.shutdown(wait=False, cancel_futures=True)
+        # Drop whatever has not started yet either way: past the deadline
+        # nobody is going to read the answer, and on a shared pool it would
+        # otherwise sit in the queue ahead of the next sweep's work.
+        for future in pending:
+            future.cancel()
+        if own:
+            # Never block the enforcement loop waiting for a hung lookup.
+            pool.shutdown(wait=False, cancel_futures=True)
 
     return results
 

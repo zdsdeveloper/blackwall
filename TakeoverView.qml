@@ -50,6 +50,17 @@ Item {
   function begin() {
     root.progress = 0
     root.running = true
+    // Belt and braces, for the same reason the lock itself has one.
+    //
+    // Every path in here is meant to end at done(): the sweep finishing, the
+    // still failing to load, the shader failing to compile. If any of them
+    // ever does not, this layer stays over the lock view holding a frozen
+    // photograph of the desktop -- no wall, no countdown, and no way out for
+    // the length of the lock. That would look exactly like the Blackwall being
+    // broken, at the moment it is least possible to check.
+    //
+    // So the sequence is bounded from outside as well as from within.
+    hardStop.restart()
     // Nothing to tear. Hand over at once rather than holding a black screen
     // for two and a half seconds.
     if (root.failed) {
@@ -63,8 +74,21 @@ Item {
   function done() {
     if (!root.running) return
     root.running = false
+    hardStop.stop()
+    sweep.stop()
     root.progress = 1
     root.finished()
+  }
+
+  Timer {
+    id: hardStop
+    // The sequence plus enough slack that it never pre-empts a healthy run.
+    interval: root.durationMs + 1500
+    repeat: false
+    onTriggered: {
+      console.warn("blackwall takeover did not finish on its own; handing over")
+      root.done()
+    }
   }
 
   visible: root.running && !root.failed && root.ready

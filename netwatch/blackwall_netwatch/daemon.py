@@ -6,6 +6,7 @@ stopped is caught the moment it starts, and it means there is no edit-detection
 race to lose.
 """
 
+import concurrent.futures
 import dataclasses
 import hashlib
 import os
@@ -108,6 +109,17 @@ class NetWatch:
         # which is why the readout distinguishes "not yet" from "clear".
         self._probe = {}
         self._probe_at = 0.0
+        # Consecutive sweeps that could not be taken. The sweep swallows every
+        # exception so a readout can never take enforcement down -- but a
+        # backstop with no signal behind it is how a thing breaks silently and
+        # stays broken, which this daemon has already learned once with
+        # enforce_failures. If probing has stopped working, the panel says so
+        # rather than showing an empty sweep that looks like nothing to report.
+        self.probe_failures = 0
+        # One executor for the life of the daemon, so a wedged lookup occupies
+        # a slot instead of leaving a thread behind on every sweep. See the
+        # note in probe.probe_all.
+        self._pool = None
         # What was leaking last time, so a standing leak is reported once
         # rather than every five minutes for as long as it lasts.
         self._leaking = set()
@@ -237,11 +249,32 @@ class NetWatch:
 
         try:
             domains = self.domains()
-            results = probe.probe_all(domains, resolver=self.resolver)
+            if self._pool is None:
+                self._pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=probe.WORKERS,
+                    thread_name_prefix="netwatch-probe")
+            results = probe.probe_all(domains, resolver=self.resolver,
+                                      pool=self._pool)
         except Exception:
             # Same standing rule as everything else the daemon reads: a
             # readout that can take enforcement down is worse than no readout.
+            # Counted, though, so it is a silence someone can see.
+            self.probe_failures += 1
             return self._probe
+
+        # The failure that actually happens.
+        #
+        # probe_all catches each lookup's exception itself and reports UNKNOWN
+        # for it, so a resolver that is comprehensively broken does not raise
+        # out of here -- it returns a full set of answers that say nothing. The
+        # except branch above is for the case that cannot really occur; this is
+        # for the one that can. A sweep that asked about names and learned
+        # nothing about any of them did not work, however calmly it returned.
+        summary = probe.summarise(results)
+        if results and summary[probe.UNKNOWN] == len(results):
+            self.probe_failures += 1
+        else:
+            self.probe_failures = 0
 
         self._probe = results
         self._probe_at = now
@@ -646,5 +679,6 @@ class NetWatch:
             "probe_at": self._probe_at,
             "probe_interval_seconds": PROBE_INTERVAL_SECONDS,
             "probe_summary": probe.summarise(self._probe),
+            "probe_failures": self.probe_failures,
             "leaking": probe.leaking(self._probe),
         }

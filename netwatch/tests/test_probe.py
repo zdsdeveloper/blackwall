@@ -130,6 +130,46 @@ class TestProbeAll(unittest.TestCase):
         finally:
             release.set()
 
+    def test_a_shared_pool_caps_threads_across_wedged_sweeps(self):
+        # The reason probe_all takes a pool at all. shutdown(wait=False) does
+        # not interrupt a thread already inside getaddrinfo, so a fresh pool
+        # per sweep left its workers behind every time -- measured at eight per
+        # sweep, forty-eight after six. Sweeps are five minutes apart and a
+        # stalled lookup normally gives up well inside that, but nothing
+        # bounded it.
+        import concurrent.futures
+        import threading
+
+        release = threading.Event()
+
+        def hanging(*a, **k):
+            release.wait(30)
+            return []
+
+        names = ["a%d.com" % i for i in range(8)]
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=probe.WORKERS)
+        try:
+            base = threading.active_count()
+            for _ in range(4):
+                out = probe.probe_all(names, resolver=hanging, deadline=0.2,
+                                      pool=pool)
+                # Nothing came back, which is what an all-UNKNOWN sweep means
+                # and what the daemon counts as a failed one.
+                self.assertTrue(all(v == probe.UNKNOWN for v in out.values()))
+            grew = threading.active_count() - base
+            self.assertLessEqual(grew, probe.WORKERS)
+        finally:
+            release.set()
+            pool.shutdown(wait=False)
+
+    def test_a_pool_that_is_already_shut_down_is_not_a_crash(self):
+        import concurrent.futures
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        pool.shutdown(wait=True)
+        out = probe.probe_all(["a.com"], resolver=lambda *a, **k: answers("0.0.0.0"),
+                              pool=pool)
+        self.assertEqual(out["a.com"], probe.UNKNOWN)
+
 
 class TestSummarise(unittest.TestCase):
     def test_counts_by_state(self):

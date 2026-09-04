@@ -36,7 +36,21 @@ Item {
   // sitting there until reboot.
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR")
   readonly property string takeoverPath:
-    (root.runtimeDir !== "" ? root.runtimeDir : "/tmp") + "/blackwall-takeover.png"
+    root.runtimeDir !== "" ? root.runtimeDir + "/blackwall-takeover.png" : ""
+
+  // No runtime directory, no takeover.
+  //
+  // The fallback here used to be /tmp, which on plenty of systems is a real
+  // filesystem rather than tmpfs. That would put a full uncompressed
+  // photograph of whatever was on the screen -- messages, mail, a banking tab
+  // -- onto persistent storage, where a crash or a power cut between the
+  // capture and the cleanup leaves it until someone notices. The cleanup is
+  // reliable in every case except the ones where it is not, and those are
+  // exactly the cases that matter.
+  //
+  // An animation is not worth that trade. Without somewhere in memory to put
+  // the still, the wall comes up the way it always did.
+  readonly property bool takeoverPossible: root.takeoverPath !== ""
   property url takeoverSource: ""
   property bool takeoverArmed: false
 
@@ -158,6 +172,13 @@ Item {
     root.takeoverSource = ""
     root.takeoverArmed = false
     root.lockPending = true
+
+    if (!root.takeoverPossible) {
+      logEvent("no runtime dir; locking without a takeover")
+      lockNow(false)
+      return
+    }
+
     lockWatchdog.restart()
     // -l 0 skips PNG compression: a third of the time for a file that is
     // deleted within seconds anyway.
@@ -198,6 +219,7 @@ Item {
   function discardTakeover() {
     root.takeoverSource = ""
     root.takeoverArmed = false
+    if (!root.takeoverPossible) return
     discardProc.command = ["rm", "-f", root.takeoverPath]
     discardProc.running = true
   }

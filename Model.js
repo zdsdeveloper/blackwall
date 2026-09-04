@@ -417,7 +417,15 @@ function identifyAgent(pointers, agents) {
   // on the way out of parsePointers, but the config is hand-written, and
   // whether someone typed 046D or 046d must not decide whether they are
   // recognised.
-  var byId = {}
+  // Object.create(null), not {}. A plain object inherits from
+  // Object.prototype, so a lookup of "__proto__" -- or "constructor", or
+  // "toString" -- finds something truthy that was never configured, and a
+  // device is free to advertise any of them as its address. The greeting
+  // would then be a JavaScript object rendered as [object Object]. Nothing is
+  // gated on this, so it is a cosmetic failure, but it is one a USB device
+  // gets to choose, and a map keyed by attacker-supplied strings should not
+  // have inherited keys in it.
+  var byId = Object.create(null)
   for (var key in agents) {
     if (agents.hasOwnProperty(key) && agents[key])
       byId[String(key).toLowerCase()] = String(agents[key])

@@ -287,6 +287,22 @@ check("agent: an addressless device still matches on its model id",
       Model.identifyAgent([{ id: "06cb:ce17", uniq: "", name: "Touchpad" }],
                           { "06cb:ce17": "TOUCHPAD" }), "TOUCHPAD");
 
+// A device is free to advertise any string as its address, including the ones
+// that name things on Object.prototype. None of them were ever configured.
+check("agent: a device claiming __proto__ is nobody",
+      Model.identifyAgent([{ id: "046d:405e", uniq: "__proto__", name: "hostile" }],
+                          { "18-c3-2d-77": "ZAMIL" }), "");
+check("agent: a device claiming constructor is nobody",
+      Model.identifyAgent([{ id: "1111:2222", uniq: "constructor", name: "hostile" }],
+                          { "18-c3-2d-77": "ZAMIL" }), "");
+check("agent: a device claiming toString as its model id is nobody",
+      Model.identifyAgent([{ id: "toString", uniq: "", name: "hostile" }], {}), "");
+// And the real one still works alongside them.
+check("agent: a hostile device does not shadow a configured one",
+      Model.identifyAgent([{ id: "1111:2222", uniq: "__proto__", name: "hostile" },
+                           { id: "046d:405e", uniq: "18-c3-2d-77", name: "M720" }],
+                          { "18-c3-2d-77": "ZAMIL" }), "ZAMIL");
+
 // -----------------------------------------------------------------------------
 
 if (failures > 0) {
