@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtMultimedia
 
 // The desktop, being taken.
 //
@@ -24,6 +25,13 @@ Item {
   property url source: ""
   property bool running: false
   property int durationMs: 2400
+
+  // Exactly one lock surface may play it. Every monitor instantiates this, and
+  // two of them firing the same sting a frame apart sounds like a fault rather
+  // than an effect -- the same reason the lock's ambience is claimed rather
+  // than simply played.
+  property bool audioLead: false
+  property real audioVolume: 0.55
 
   property real progress: 0
 
@@ -73,6 +81,7 @@ Item {
       root.done()
       return
     }
+    if (root.audioLead) sting.play()
     if (root.ready) sweep.restart()
     // otherwise onStatusChanged starts it the moment the still lands
   }
@@ -82,6 +91,9 @@ Item {
     root.running = false
     hardStop.stop()
     sweep.stop()
+    // Skipped past, so the sting should not keep playing over a wall that is
+    // already up.
+    if (sting.playbackState === MediaPlayer.PlayingState) sting.stop()
     root.progress = 1
     root.finished()
   }
@@ -98,6 +110,20 @@ Item {
   }
 
   visible: root.running && !root.failed && root.ready
+
+  // One shot, synthesised by tools/make-takeover-sound.py and shaped to the
+  // tear: the crack at the top, the fall through the middle, the impact as it
+  // takes the screen, then a low settle for the wall's own ambience to come in
+  // under. Not looped -- it ends where the tear does.
+  MediaPlayer {
+    id: sting
+    source: Qt.resolvedUrl("sounds/takeover.mp3")
+    audioOutput: AudioOutput { volume: root.audioVolume }
+    onErrorOccurred: function (err, str) {
+      // A missing or unplayable sting is not a reason for the wall to stall.
+      console.warn("blackwall takeover sound:", str)
+    }
+  }
 
   Image {
     id: shot

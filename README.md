@@ -8,6 +8,12 @@ session locks and stays locked until the timer runs out.
 There is no password prompt, no cancel button, and no unlock IPC method.
 That is the point.
 
+**This branch also carries NetWatch** — a root daemon that keeps a list of
+domains sinkholed, watches the files that do the sinkholing, and puts the wall
+on the screen if they are interfered with. The lock above is a thing you
+choose for an hour. NetWatch is a thing you decide once. See
+[NetWatch](#netwatch) below.
+
 ## Install
 
 ```bash
@@ -25,6 +31,19 @@ Enabling puts the button in the bar's right section. Move it with:
 ```bash
 omarchy bar move zds.blackwall --section center
 ```
+
+### The opening sequence
+
+Engaging does not cut to the wall. The screen is photographed the instant
+before the session locks, and a rift tears that still open until nothing is
+left — the desktop pulled toward the hole in strips, its colour draining, and
+the wall showing through the gap rather than fading in over it. The still is
+kept in `XDG_RUNTIME_DIR`, which is memory, and deleted as soon as the tear is
+done with it. Without a runtime directory there is no capture and no sequence.
+
+The sting over it is synthesised, not sampled — `tools/make-takeover-sound.py`
+builds `sounds/takeover.mp3` from oscillators, and is committed so the sound
+can be changed rather than merely replaced.
 
 ### Optional: give it a soundtrack
 
@@ -335,6 +354,130 @@ omarchy-shell blackwall setPersist false   # flip the toggle
 while a lock is already up. There is no `release`. `setPersist` is safe to
 call while locked — it decides what happens at the *next* boot, so it is not
 an unlock path.
+
+## NetWatch
+
+A root daemon that keeps a list of domains sinkholed and notices when
+something changes that.
+
+The lock above is voluntary and temporary — you pick an hour, it ends. NetWatch
+is neither. It is for the case where the decision has already been made and the
+job of the software is to keep it made, including against the person who
+installed it. There is no unblock command, no removal command, and no
+disable flag, and their absence is the feature rather than an omission.
+
+### Install
+
+```bash
+netwatch/install.sh
+```
+
+Needs root: it installs a systemd unit, a package-manager hook, and the daemon
+itself. Re-run it after pulling; it restarts the service and waits until the
+daemon answers before reporting success.
+
+### Containing a domain
+
+```bash
+netwatchctl add xnxx.com          # from anywhere, no root needed
+netwatchctl status                # counts, and anything found weakened
+netwatchctl status --json         # the whole report, which the panel reads
+netwatchctl log --limit 40        # the ledger, newest last
+```
+
+Adding is deliberately unprivileged — the control socket is world-writable,
+because making it hard to *add* would be protecting the wrong direction. The
+list only grows.
+
+Each domain becomes four lines in `/etc/hosts`: an IPv4 sink and an IPv6 sink,
+for the bare name and for `www.`. Both families matter, because the resolver
+consults them independently and a v4-only entry leaves a v6 route open.
+
+### The station
+
+A window, from the bar menu → **NetWatch Station…**
+
+It shows what is contained, what is verified as enforced right now, the
+escalation state, and the ledger as a live console. The contained list is
+redacted by default and reveals on a click, because a station left open on a
+second monitor should not read the list out to the room; the console and the
+resolver panel redact under the same flag, since every add writes the domain
+into the log in plain text.
+
+### The resolver sweep
+
+Every five minutes the daemon asks the system resolver where each contained
+name actually points, and the station draws one cell per subject.
+
+This answers a question the file cannot. `/etc/hosts` carrying the right lines
+is a claim about a file; it is not the same claim as "when something on this
+machine looks that name up, it does not get the real address". The gap between
+them is where a block actually fails — `nsswitch.conf` ordering, an
+application's own DNS-over-HTTPS resolver, a stale `systemd-resolved` cache, a
+namespace with its own hosts file.
+
+It resolves and nothing more. It never connects and never speaks HTTP: opening
+a socket to a site NetWatch exists to block would be a strange way to check
+that it is blocked. When the wall is working every probe is answered out of
+`/etc/hosts` and no query leaves the machine. The one case where a query does
+leave is a name that is genuinely no longer sunk, which is exactly the case
+worth knowing about.
+
+A leak found this way is reported loudly and never escalates. A resolver
+returning a real address can as easily be a stale cache or a VPN's nameserver
+as it can be tampering, and a twenty-minute lock for a DNS hiccup would be a
+bad trade.
+
+### What it watches, and what happens
+
+Every thirty seconds the daemon repairs what it owns and checks what it
+cannot: the sink lines, the browser policy that pins DNS-over-HTTPS off, its
+own unit file, and the append-only flag on the ledger.
+
+Weakening any of those is a breach. The first one asks you a question on a
+locked surface; a second one inside six hours puts the Blackwall up for twenty
+minutes. The ladder counts unanswered breaches, not total ones.
+
+A system update is not tampering. Package transactions are recognised as such,
+so `pacman -Syu` rewriting a managed file is repaired quietly rather than read
+as someone taking the wall apart.
+
+### Files
+
+| Path                                     | What it is                                     |
+|------------------------------------------|------------------------------------------------|
+| `netwatch/install.sh`                    | Installs the daemon, unit, hooks and CLI       |
+| `netwatch/bin/blackwall-netwatch`        | The daemon entry point                         |
+| `netwatch/bin/netwatchctl`               | The control CLI                                |
+| `netwatch/blackwall_netwatch/daemon.py`  | The repair loop, the ladder, and status        |
+| `netwatch/blackwall_netwatch/hosts.py`   | The `/etc/hosts` region and how it is spliced  |
+| `netwatch/blackwall_netwatch/integrity.py` | What "weakened" means, in one place          |
+| `netwatch/blackwall_netwatch/probe.py`   | Resolution sweeps                              |
+| `netwatch/blackwall_netwatch/provenance.py` | Telling a package transaction from tampering |
+| `netwatch/blackwall_netwatch/ledger.py`  | The append-only record                         |
+| `netwatch/tests/`                        | The daemon's tests                             |
+| `BlackwallPanel.qml`                     | The station                                    |
+| `Station*.qml`                           | Its instruments                                |
+| `TakeoverView.qml`, `takeover.frag`      | The lock's opening sequence                    |
+
+The blocklist itself is kept outside this repository, under `/var/lib`. It is
+nobody else's business, and a public repo is the wrong place for it.
+
+Removing the shell plugin takes the station and the bar widget away. It does
+not affect NetWatch, which is a system service and does not live in this
+directory.
+
+### Tests
+
+```bash
+PYTHONPATH=netwatch python3 -m unittest discover -s netwatch/tests -t netwatch/tests
+node tests/model.test.js
+tests/run-qml-tests.sh
+```
+
+The QML tests run offscreen and need no compositor. `qmltestrunner` ships with
+`qt6-declarative` and lives in `/usr/lib/qt6/bin`, which is not on `PATH`.
+
 
 ## Tuning the look
 

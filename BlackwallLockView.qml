@@ -314,6 +314,7 @@ Item {
     id: takeover
     anchors.fill: parent
     source: root.takeoverSource
+    audioLead: root.audioLead
 
     onFinished: root.takeoverFinished()
 
