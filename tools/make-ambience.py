@@ -47,22 +47,33 @@ OUT_MP3 = os.path.join(HERE, "..", "audio", "ambience.mp3")
 # 1780 / 48s = 37.083Hz -- four cycles apart, so it beats against the first
 #   once every twelve seconds. That slow swell is most of the character.
 VOICES = [
+    (1176, 0.34, 0.0),      # 24.500 Hz  the floor, felt more than heard
+    (1181, 0.26, 2.4),      # 24.604 Hz  five cycles off, a 5s beat under it
     (1776, 0.50, 0.0),      # 37.000 Hz  the mass
-    (1780, 0.42, 1.1),      # 37.083 Hz  beating against it
-    (2664, 0.16, 0.4),      # 55.500 Hz  a fifth above
-    (3552, 0.13, 2.2),      # 74.000 Hz  the octave
-    (3557, 0.09, 0.8),      # 74.104 Hz  beating again, faster
-    (5328, 0.05, 1.7),      # 111.00 Hz  upper body, quiet
-    (7104, 0.03, 0.3),      # 148.00 Hz
+    (1780, 0.44, 1.1),      # 37.083 Hz  four cycles off, a 12s swell
+    (1783, 0.20, 3.0),      # 37.146 Hz  a third voice, so the beat is not
+                            #            a clean pulse but something turning
+    (2664, 0.15, 0.4),      # 55.500 Hz  a fifth above
+    (2670, 0.11, 1.6),      # 55.625 Hz  beating again
+    (3552, 0.10, 2.2),      # 74.000 Hz  the octave
+    (3557, 0.07, 0.8),      # 74.104 Hz
+    (5328, 0.030, 1.7),     # 111.00 Hz  upper body, quiet
 ]
 
-# Faint, high, and drifting: the sense of something digital going on a long way
-# off. Each is amplitude-shaped by its own slow LFO, also on the loop grid.
+# Faint, and a long way off.
+#
+# These were sitting at 2.2-4.2kHz and loud enough to read as a signal coming
+# from the wall itself, which is the wrong idea entirely -- it made the thing
+# sound like equipment rather than like something enormous and aware. They are
+# lower now, a quarter of the level, and shaped by a fourth-power envelope so
+# each one is absent most of the time and only ever surfaces briefly. What is
+# wanted is the sense of something happening on the far side of a very thick
+# wall, not a tone on this side of it.
 SHIMMER = [
-    (108_000, 0.014, 5, 0.0),    # 2250 Hz, breathing 5 times per loop
-    (135_120, 0.010, 3, 1.9),    # 2815 Hz
-    (163_200, 0.008, 7, 3.4),    # 3400 Hz
-    (201_600, 0.006, 4, 0.6),    # 4200 Hz
+    (38_400, 0.0035, 5, 0.0),    # 800 Hz
+    (52_800, 0.0028, 3, 1.9),    # 1100 Hz
+    (69_120, 0.0022, 7, 3.4),    # 1440 Hz
+    (86_400, 0.0016, 4, 0.6),    # 1800 Hz
 ]
 
 
@@ -85,7 +96,15 @@ def main():
         for i in range(N):
             # 0..1, so the partial fades fully out rather than pulsing.
             env = 0.5 - 0.5 * math.cos(lfo_step * i + phase)
-            buf[i] += amp * env * env * math.sin(step * i)
+            buf[i] += amp * (env ** 4) * math.sin(step * i)
+
+    # --- the breath ---------------------------------------------------------
+    # One cycle every twenty-four seconds, over the whole mass. This is most of
+    # what separates something alive from a held chord: the wall swells and
+    # subsides, slowly enough that you feel it before you notice it.
+    breath_step = two_pi_over_n * 2          # two cycles per 48s loop
+    for i in range(N):
+        buf[i] *= 0.78 + 0.22 * (0.5 - 0.5 * math.cos(breath_step * i))
 
     # --- the swell ----------------------------------------------------------
     # Six over the loop, so it divides exactly. Deep, slow, and felt rather
@@ -94,30 +113,44 @@ def main():
     for k in range(6):
         start = k * swell_every
         length = int(RATE * 5.5)
-        f = two_pi_over_n * 1200            # 25 Hz
+        f = two_pi_over_n * 912             # 19 Hz
         for j in range(length):
             i = (start + j) % N             # wraps, so the last one loops in
             u = j / length
             env = math.sin(math.pi * u) ** 2
-            buf[i] += 0.30 * env * math.sin(f * i)
+            buf[i] += 0.42 * env * math.sin(f * i)
 
     # --- the bed ------------------------------------------------------------
     # Brown-ish noise: not periodic, so the tail is crossfaded into the head
     # below. Very quiet; it is there to stop the drone sounding synthetic.
+    edge = int(RATE * 1.5)
     level = 0.0
     for i in range(N):
         level += rnd.uniform(-1, 1) * 0.02
         level = max(-1.0, min(1.0, level * 0.995))
-        buf[i] += level * 0.09
+        # Raised-cosine in and out, so the bed is silent exactly at the join.
+        if i < edge:
+            w = 0.5 - 0.5 * math.cos(math.pi * i / edge)
+        elif i >= N - edge:
+            w = 0.5 - 0.5 * math.cos(math.pi * (N - 1 - i) / edge)
+        else:
+            w = 1.0
+        buf[i] += level * 0.09 * w
 
     # --- close the loop -----------------------------------------------------
-    # Everything periodic already meets itself. This is for the noise.
-    fade = int(RATE * 2.0)
-    for j in range(fade):
-        u = j / fade
-        head = buf[j]
-        tail = buf[N - fade + j]
-        buf[N - fade + j] = tail * (1 - u) + head * u
+    #
+    # Everything above is exactly periodic and already meets itself. The noise
+    # is the only part that cannot be, so it is faded to silence at both ends
+    # of the loop instead: nothing discontinuous is left at the join, and the
+    # bed dipping briefly once every forty-eight seconds is inaudible under a
+    # drone this heavy.
+    #
+    # It used to be a crossfade, and that was wrong. Blending the tail toward
+    # `buf[j]` walks it to the sample two seconds into the loop, not to the
+    # sample at zero -- so the join never closed. It was survivable while the
+    # low end was light and became a clear click the moment it was not:
+    # measured at a step of 6251 across the join against a largest ordinary
+    # step of 1618.
 
     # --- level --------------------------------------------------------------
     peak = max(abs(v) for v in buf) or 1.0
