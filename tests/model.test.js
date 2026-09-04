@@ -79,9 +79,9 @@ check("state: missing bootId reads as unknown", Model.parseState('{"deadline":99
 // ---------------------------------------------------------------- the config
 
 const DEFAULT = Model.DEFAULT_CHALLENGE_PHRASE;
-check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] } });
-check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] } });
-check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] } });
+check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] }, activity: { enabled: false, breakAfterMinutes: 60, idleResetMinutes: 5, snoozeMinutes: 15 } });
+check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] }, activity: { enabled: false, breakAfterMinutes: 60, idleResetMinutes: 5, snoozeMinutes: 15 } });
+check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] }, activity: { enabled: false, breakAfterMinutes: 60, idleResetMinutes: 5, snoozeMinutes: 15 } });
 check("config: persist can be turned off", Model.parseConfig('{"persistAcrossReboot":false}').persistAcrossReboot, false);
 // Anything that is not literally false persists, because persisting is the
 // behaviour the plugin shipped with and the safer default.
@@ -523,6 +523,78 @@ if (writeBlock) {
   check("round trip: every key the parser produces is also written",
         missing, []);
 }
+
+// ------------------------------------------------------ the activity clock
+//
+// Suggests a break; never takes one. Nothing here can engage the wall, and the
+// tests below are as much about it staying quiet as about it speaking up -- a
+// reminder that nags is a reminder that gets switched off.
+
+const ACT = (o) => Model.parseActivity(Object.assign({ enabled: true }, o));
+const MIN = 60000;
+// Run the clock for n minutes, a minute at a time, as the real tick does.
+function runFor(cfg, state, minutes, idle) {
+  for (let i = 0; i < minutes; i++) state = Model.activityTick(cfg, state, idle, MIN);
+  return state;
+}
+const fresh = { activeMs: 0, idleMs: 0 };
+
+check("activity: off unless asked for", Model.parseActivity({}).enabled, false);
+check("activity: an hour by default", Model.parseActivity({}).breakAfterMinutes, 60);
+check("activity: cannot be set to nag constantly", ACT({ breakAfterMinutes: 0 }).breakAfterMinutes, 5);
+check("activity: nor to never fire", ACT({ breakAfterMinutes: 99999 }).breakAfterMinutes, 480);
+check("activity: junk falls back", ACT({ breakAfterMinutes: "soon" }).breakAfterMinutes, 60);
+check("activity: snooze has a floor", ACT({ snoozeMinutes: 0 }).snoozeMinutes, 1);
+
+// --- the clock ---
+const cfg = ACT({ breakAfterMinutes: 60, idleResetMinutes: 5, snoozeMinutes: 15 });
+check("clock: time at the keyboard accumulates",
+      runFor(cfg, fresh, 30, false).activeMs, 30 * MIN);
+check("clock: being away does not count as working",
+      runFor(cfg, fresh, 30, true).activeMs, 0);
+// A short pause is not a break.
+check("clock: a two minute pause does not reset it",
+      runFor(cfg, runFor(cfg, fresh, 40, false), 2, true).activeMs, 40 * MIN);
+check("clock: five minutes away is the break",
+      runFor(cfg, runFor(cfg, fresh, 40, false), 5, true).activeMs, 0);
+check("clock: coming back starts the idle stretch over",
+      runFor(cfg, runFor(cfg, fresh, 40, false), 1, false).idleMs, 0);
+
+// A machine that slept, or a clock that jumped. Not time spent working.
+check("clock: a jump forward is not work",
+      Model.activityTick(cfg, { activeMs: 30 * MIN, idleMs: 0 }, false, 3 * 3600000).activeMs, 0);
+check("clock: a negative delta is ignored",
+      Model.activityTick(cfg, { activeMs: 5 * MIN, idleMs: 0 }, false, -9999).activeMs, 5 * MIN);
+check("clock: junk state does not crash",
+      Model.activityTick(cfg, null, false, MIN).activeMs, MIN);
+
+// --- when it speaks ---
+const worked = runFor(cfg, fresh, 60, false);
+check("suggest: after the configured stretch",
+      Model.activityDecision(cfg, worked, 0, 1000).action, "suggest");
+check("suggest: and says how long", Model.activityDecision(cfg, worked, 0, 1000).activeMinutes, 60);
+check("suggest: not before", Model.activityDecision(cfg, runFor(cfg, fresh, 59, false), 0, 1000).action, "none");
+check("suggest: never while disabled",
+      Model.activityDecision(Model.parseActivity({ breakAfterMinutes: 60 }), worked, 0, 1000).action, "none");
+// They are already away; that is the break.
+check("suggest: not while they are away",
+      Model.activityDecision(cfg, { activeMs: 90 * MIN, idleMs: MIN }, 0, 1000).action, "none");
+
+// --- and when it stays quiet ---
+const t = 10 * 3600000;
+check("snooze: quiet just after asking",
+      Model.activityDecision(cfg, worked, t, t + 5 * MIN).action, "none");
+check("snooze: speaks again once it has passed",
+      Model.activityDecision(cfg, worked, t, t + 16 * MIN).action, "suggest");
+check("snooze: never asked before, so it may ask",
+      Model.activityDecision(cfg, worked, 0, t).action, "suggest");
+
+check("config: activity is carried through",
+      Model.parseConfig('{"activity":{"enabled":true,"breakAfterMinutes":90}}').activity.breakAfterMinutes, 90);
+check("config: no activity block is a disabled one",
+      Model.parseConfig("{}").activity.enabled, false);
+check("config: junk activity does not throw",
+      Model.parseConfig('{"activity":7}').activity.enabled, false);
 
 // -----------------------------------------------------------------------------
 

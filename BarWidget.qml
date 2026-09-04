@@ -59,14 +59,18 @@ Panel {
 
   // Presets, the Custom row, and the persistence toggle share one cursor
   // index space: 0..n-1 presets, then Custom, then the toggle.
-  readonly property int menuItemCount: presets.length + 4
+  readonly property int menuItemCount: presets.length + 5
   readonly property int customIndex: presets.length
   readonly property int persistIndex: presets.length + 1
   readonly property int soundIndex: presets.length + 2
-  readonly property int stationIndex: presets.length + 3
+  readonly property int breakIndex: presets.length + 3
+  readonly property int stationIndex: presets.length + 4
 
   readonly property bool persistAcrossReboot: service ? service.persistAcrossReboot === true : true
   readonly property bool soundEnabled: service ? service.soundEnabled === true : true
+  readonly property bool breakRemindersOn:
+    service && service.activityConfig ? service.activityConfig.enabled === true : false
+  readonly property int activeMinutes: service ? (service.activeMinutes || 0) : 0
 
   // What the schedule is about to do, for the menu. Empty when nothing is
   // scheduled, so the row simply is not there rather than saying "off".
@@ -79,6 +83,10 @@ Panel {
     if (n.inMinutes < 60) return n.label + " in " + n.inMinutes + " min"
     var h = Math.floor(n.inMinutes / 60)
     return n.label + " in " + h + "h " + (n.inMinutes % 60) + "m"
+  }
+
+  function toggleBreaks() {
+    if (root.service) root.service.setActivityEnabled(!root.breakRemindersOn)
   }
 
   function toggleSound() {
@@ -120,6 +128,7 @@ Panel {
     else if (cursorIndex === customIndex) enterCustomStage()
     else if (cursorIndex === persistIndex) togglePersist()
     else if (cursorIndex === soundIndex) toggleSound()
+    else if (cursorIndex === breakIndex) toggleBreaks()
     else if (cursorIndex === stationIndex) openStation()
   }
 
@@ -285,6 +294,23 @@ Panel {
             fontFamily: root.bar.fontFamily
             onClicked: root.toggleSound()
             onHovered: function(on) { if (on) root.cursorIndex = root.soundIndex }
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Break Reminders"
+            description: root.breakRemindersOn
+              ? (root.activeMinutes >= 60
+                 ? "At the machine " + Math.floor(root.activeMinutes / 60)
+                   + "h " + (root.activeMinutes % 60) + "m."
+                 : "At the machine " + root.activeMinutes + " min.")
+              : "Off — nothing is counting."
+            checked: root.breakRemindersOn
+            hasCursor: root.cursorIndex === root.breakIndex
+            foreground: root.barForeground
+            fontFamily: root.bar.fontFamily
+            onClicked: root.toggleBreaks()
+            onHovered: function(on) { if (on) root.cursorIndex = root.breakIndex }
           }
 
           Toggle {

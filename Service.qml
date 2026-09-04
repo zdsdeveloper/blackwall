@@ -138,6 +138,94 @@ Item {
   // Keeping the provided set out of the config file also means two writers
   // never fight over it.
   property var scheduleConfig: ({ enabled: false, warnSeconds: 120, windows: [] })
+
+  // ---- the activity clock --------------------------------------------------
+  //
+  // How long at the machine without a break, and a nudge when it has been a
+  // while. This one only ever suggests: nothing here engages the wall, and the
+  // notification says so. A tracker that locked you out on its own judgement
+  // would be a different and much worse thing.
+  //
+  // Idle comes from ext-idle-notify through Quickshell's IdleMonitor, so
+  // "away" is the compositor's answer rather than a guess.
+  property var activityConfig: ({ enabled: false, breakAfterMinutes: 60,
+                                  idleResetMinutes: 5, snoozeMinutes: 15 })
+  property var activityState: ({ activeMs: 0, idleMs: 0 })
+  property double activityLastPrompt: 0
+  property double activityLastTick: 0
+
+  readonly property int activeMinutes:
+    Math.floor((Number(root.activityState.activeMs) || 0) / 60000)
+
+  IdleMonitor {
+    id: idleWatch
+    enabled: root.activityConfig.enabled === true
+    // Short, so "away" is noticed promptly and the reset counts from close to
+    // when they actually left. The threshold that matters is
+    // idleResetMinutes, which is measured from here.
+    timeout: 30
+    // Something holding idle off -- a video playing -- means they are at the
+    // machine, which is exactly what this is counting.
+    respectInhibitors: true
+  }
+
+  Timer {
+    interval: 15000
+    repeat: true
+    running: root.activityConfig.enabled === true
+    onTriggered: root.activityTick()
+  }
+
+  function activityTick() {
+    var now = Date.now()
+    var delta = root.activityLastTick > 0 ? now - root.activityLastTick : 0
+    root.activityLastTick = now
+    if (delta <= 0) return
+
+    root.activityState = Model.activityTick(root.activityConfig,
+                                            root.activityState,
+                                            idleWatch.isIdle, delta)
+
+    // Never while the wall is up: being locked out is not working, and a
+    // notification nobody can see is a notification wasted.
+    if (root.holding) return
+
+    var call = Model.activityDecision(root.activityConfig, root.activityState,
+                                      root.activityLastPrompt, now)
+    if (call.action !== "suggest") return
+    root.activityLastPrompt = now
+    logEvent("activity: " + call.activeMinutes + " min at the machine")
+    var hours = Math.floor(call.activeMinutes / 60)
+    var mins = call.activeMinutes % 60
+    var span = hours > 0
+      ? (hours + (hours === 1 ? " hour " : " hours ") + mins + " min")
+      : (mins + " min")
+    breakProc.command = ["notify-send", "-a", "Blackwall",
+                         "You have been at this for " + span,
+                         "Worth a break. Lock the wall from the bar if you want one."]
+    breakProc.running = true
+  }
+
+  Process { id: breakProc }
+
+  function setActivityEnabled(value) {
+    var next = !!value
+    if (next === (root.activityConfig.enabled === true) && root.configLoaded)
+      return next
+    var updated = ({})
+    for (var k in root.activityConfig)
+      if (root.activityConfig.hasOwnProperty(k)) updated[k] = root.activityConfig[k]
+    updated.enabled = next
+    root.activityConfig = updated
+    // Turning it on starts the count from now rather than from whenever the
+    // shell happened to load.
+    root.activityState = ({ activeMs: 0, idleMs: 0 })
+    root.activityLastTick = 0
+    root.activityLastPrompt = 0
+    writeConfig()
+    logEvent("activity=" + next)
+    return next
+  }
   property var providedWindows: ({})
 
   readonly property var effectiveWindows: {
@@ -724,6 +812,7 @@ Item {
     root.challengePhrase = parsed.challengePhrase
     root.agents = parsed.agents
     root.scheduleConfig = parsed.schedule
+    root.activityConfig = parsed.activity
     root.configLoaded = true
     root.maybeResume()
     root.refreshSound()
@@ -760,7 +849,8 @@ Item {
         maxLockMinutes: root.scheduleConfig.maxLockMinutes,
         gapSeconds: root.scheduleConfig.gapSeconds,
         windows: root.scheduleConfig.windows
-      }
+      },
+      activity: root.activityConfig
     }, null, 2) + "\n")
   }
 
@@ -1016,6 +1106,21 @@ Item {
       root.scheduleTick()
       logEvent("schedule: " + name + " cleared")
       return "cleared"
+    }
+
+    function breaks(): string {
+      if (root.activityConfig.enabled !== true) return "off"
+      return "on  |  " + root.activeMinutes + " min at the machine"
+             + (idleWatch.isIdle ? "  |  away" : "")
+    }
+
+    function setBreaks(value: string): string {
+      var text = String(value || "").trim().toLowerCase()
+      if (text !== "on" && text !== "off")
+        return "usage: blackwall setBreaks <on|off>"
+      // Safe while locked, like the others: it changes whether a reminder is
+      // offered, not whether the wall is there.
+      return root.setActivityEnabled(text === "on") ? "on" : "off"
     }
 
     function soundOn(): string {

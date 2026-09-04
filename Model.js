@@ -117,7 +117,8 @@ function parseConfig(raw) {
     // parseSchedule the moment that grew a field, which is the same shape of
     // fault as a key the parser knows and the writer does not: two places
     // holding the same truth, and only one of them updated.
-    schedule: parseSchedule({})
+    schedule: parseSchedule({}),
+    activity: parseActivity({})
   }
   var text = String(raw || "").trim()
   if (text === "") return defaults
@@ -141,7 +142,8 @@ function parseConfig(raw) {
       // agents configured rather than taking the config down with it.
       agents: (parsed.agents && typeof parsed.agents === "object"
                && !Array.isArray(parsed.agents)) ? parsed.agents : {},
-      schedule: parseSchedule(parsed.schedule)
+      schedule: parseSchedule(parsed.schedule),
+      activity: parseActivity(parsed.activity)
     }
   } catch (e) {
     return defaults
@@ -717,4 +719,78 @@ function scheduleDecision(schedule, windows, now, holding, gapUntilMs) {
   if (!next) return none
   if (next.inMinutes * 60 > schedule.warnSeconds) return none
   return { action: "warn", label: next.label, inMinutes: next.inMinutes }
+}
+
+
+// -------------------------------------------------------- the activity clock
+//
+// How long you have been at the machine without a break, and when to say so.
+//
+// This one only ever suggests. The scheduler takes the screen because a window
+// you set says so; this watches how long you have been going and offers. A
+// tracker that locked you out on its own judgement would be a different and
+// much worse thing, and nothing here can engage the wall.
+//
+// Idle comes from ext-idle-notify via Quickshell's IdleMonitor, so "away" is
+// the compositor's answer rather than a guess from mouse polling.
+
+function parseActivity(raw) {
+  if (!raw || typeof raw !== "object") raw = {}
+  var after = Number(raw.breakAfterMinutes)
+  var reset = Number(raw.idleResetMinutes)
+  var snooze = Number(raw.snoozeMinutes)
+  return {
+    // Off unless asked for. A machine that starts nagging the day it updates
+    // is a machine people turn features off on.
+    enabled: raw.enabled === true,
+    // How long at the keyboard before it says something. Floor of 5 so a
+    // typo cannot make it constant; ceiling of 8 hours because past that it
+    // is not a break reminder.
+    breakAfterMinutes: isFinite(after) ? clamp(Math.round(after), 5, 480) : 60,
+    // How long away counts as having had the break. Short enough that a real
+    // pause resets it, long enough that reading a page does not.
+    idleResetMinutes: isFinite(reset) ? clamp(Math.round(reset), 1, 120) : 5,
+    // How long it stays quiet after being ignored, so declining once is not
+    // answered by asking again a minute later.
+    snoozeMinutes: isFinite(snooze) ? clamp(Math.round(snooze), 1, 240) : 15
+  }
+}
+
+// Advance the clock by `deltaMs`. Pure: takes a state, returns a new one.
+//
+//   activeMs  time at the machine since the last real break
+//   idleMs    time away in the current stretch, 0 while active
+function activityTick(cfg, state, isIdle, deltaMs) {
+  var activeMs = Number(state && state.activeMs) || 0
+  var idleMs = Number(state && state.idleMs) || 0
+  var delta = Number(deltaMs)
+  if (!isFinite(delta) || delta < 0) delta = 0
+  // A jump forward -- the machine slept, or the clock moved -- is not time
+  // spent working. Anything past a minute in one tick is treated as away.
+  if (delta > 60000) {
+    return { activeMs: 0, idleMs: idleMs + delta }
+  }
+
+  if (isIdle) {
+    idleMs += delta
+    // Away long enough to count as the break itself.
+    if (idleMs >= cfg.idleResetMinutes * 60000) activeMs = 0
+    return { activeMs: activeMs, idleMs: idleMs }
+  }
+  return { activeMs: activeMs + delta, idleMs: 0 }
+}
+
+// Whether to say something now.
+function activityDecision(cfg, state, lastPromptMs, nowMs) {
+  var none = { action: "none", activeMinutes: 0 }
+  if (!cfg || cfg.enabled !== true) return none
+  var activeMs = Number(state && state.activeMs) || 0
+  var minutes = Math.floor(activeMs / 60000)
+  if (activeMs < cfg.breakAfterMinutes * 60000) return none
+  // Not while they are already away -- they are having the break.
+  if (Number(state && state.idleMs) > 0) return none
+  var last = Number(lastPromptMs) || 0
+  var now = Number(nowMs) || 0
+  if (last > 0 && now - last < cfg.snoozeMinutes * 60000) return none
+  return { action: "suggest", activeMinutes: minutes }
 }
