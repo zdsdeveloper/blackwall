@@ -24,6 +24,7 @@ Item {
   readonly property string home: Quickshell.env("HOME")
   readonly property string stateDir: home + "/.local/state/omarchy/blackwall"
   readonly property string statePath: stateDir + "/deadline"
+  readonly property string activityPath: stateDir + "/activity"
   readonly property string configPath: home + "/.config/omarchy/zds.blackwall.json"
   readonly property string soundDir: home + "/.config/omarchy/plugins/zds.blackwall/sounds"
 
@@ -196,6 +197,16 @@ Item {
                                             root.activityState,
                                             idleWatch.isIdle, delta)
 
+    // Written down whenever the minute on the count changes, which is once a
+    // minute at the machine and not at all while they are away.
+    //
+    // Not writing while away is the point rather than a saving: the timestamp
+    // on the last write is what the gap on the way back is measured from, so
+    // a file that stopped being touched the moment they left is exactly the
+    // record that says when they left.
+    if (root.activityRestored
+        && root.activeMinutes !== root.persistedActiveMinute) root.persistActivity()
+
     // Never while the wall is up: being locked out is not working, and a
     // notification nobody can see is a notification wasted.
     if (root.holding) return
@@ -257,8 +268,10 @@ Item {
       logEvent("activity: break of " + minutes + " min")
       // The count restarts from the break, not from when the wall comes down:
       // the break is the reset.
-      root.activityState = ({ activeMs: 0, idleMs: 0 })
-      root.activityLastTick = 0
+      // Written down immediately rather than at the next tick. The wall is
+      // about to come up for a quarter of an hour, and a shell that goes down
+      // behind it must not come back to the stretch this break just paid off.
+      root.resetActivityCount()
       root.engage(Model.breakSeconds(minutes))
     }
   }
@@ -275,10 +288,9 @@ Item {
     updated.enabled = next
     root.activityConfig = updated
     // Turning it on starts the count from now rather than from whenever the
-    // shell happened to load.
-    root.activityState = ({ activeMs: 0, idleMs: 0 })
-    root.activityLastTick = 0
+    // shell happened to load, or from whatever was last written down.
     root.activityLastPrompt = 0
+    root.resetActivityCount()
     writeConfig()
     logEvent("activity=" + next)
     return next
@@ -758,6 +770,107 @@ Item {
     takeSessionLock()
   }
 
+  // ---- the count, written down ---------------------------------------------
+  //
+  // The stretch used to live only in this object, which meant the shell going
+  // down took it with it -- and the shell goes down on a theme change, on any
+  // edit to any plugin, and on a crash. Each one handed out a fresh three
+  // hours. That made the one thing deliberately not a choice into a choice,
+  // and a trivially easy one, so it is on disk now.
+  //
+  // Kept apart from the deadline file rather than folded into it. They answer
+  // different questions, are written on completely different rhythms, and a
+  // corrupt one of them should not cost the other: a lock still owed is the
+  // more serious of the two and must not be lost because a counter would not
+  // parse.
+  property int persistedActiveMinute: -1
+
+  // An explicit reset: the count goes to zero and is written down at once.
+  //
+  // It also stands down any restore still in flight. Without that, a stretch
+  // read back off disk a moment later could resurrect one that has just been
+  // paid off by a break -- the two land in whichever order the processes
+  // finish, and only one of those orders is right.
+  function resetActivityCount() {
+    root.activityState = ({ activeMs: 0, idleMs: 0 })
+    root.activityLastTick = 0
+    root.activityRestored = true
+    root.persistActivity()
+  }
+
+  function persistActivity() {
+    root.persistedActiveMinute = root.activeMinutes
+    activityFile.write(JSON.stringify({
+      version: 1,
+      activeMs: Math.round(Number(root.activityState.activeMs) || 0),
+      idleMs: Math.round(Number(root.activityState.idleMs) || 0),
+      at: Date.now()
+    }) + "\n")
+  }
+
+  // Two inputs, landing in whichever order they finish: the file and the
+  // config the gap is judged against. Whichever is last does the work. Same
+  // shape as the deadline resume, and for the same reason.
+  property bool activityRead: false
+  property bool activityRestored: false
+  property string activityRaw: ""
+
+  function noteActivityState(raw) {
+    root.activityRaw = String(raw || "")
+    root.activityRead = true
+    root.maybeRestoreActivity()
+  }
+
+  function maybeRestoreActivity() {
+    if (root.activityRestored) return
+    if (!root.activityRead || !root.configLoaded) return
+    root.activityRestored = true
+
+    var saved = Model.parseActivityState(root.activityRaw)
+    var back = Model.restoreActivity(root.activityConfig, saved, Date.now())
+
+    if (!back.kept) {
+      // Either nothing was saved, or they were away long enough that being
+      // away was the break. Only worth a line when there was something to
+      // lose; a first run is not an event.
+      if (saved.activeMs > 0 && root.activityConfig.enabled === true)
+        logEvent("activity: " + Math.round(back.gapMs / 60000)
+                 + " min away across the restart -- the stretch reset")
+      return
+    }
+
+    root.activityState = ({ activeMs: back.activeMs, idleMs: back.idleMs })
+    // The count did not move; the record of it is still current. Restamping
+    // the minute here stops the next tick writing the same figure back out.
+    root.persistedActiveMinute = root.activeMinutes
+    logEvent("activity: resumed at " + root.activeMinutes + " min at the machine")
+  }
+
+  // Blackwall's own, in the same 0700 directory as the deadline, under the
+  // same guard. Symlinks refused; a write may take the name back, because a
+  // counter that quietly stopped persisting would be the whole hole again.
+  GuardedFile {
+    id: activityFile
+    path: root.stateDirReady ? root.activityPath : ""
+    guardScript: root.guardScript
+    allowSymlink: false
+    reclaim: true
+
+    onReadyChanged: if (ready) read()
+    onTextReady: function(text) { root.noteActivityState(text) }
+    onAbsent: root.noteActivityState("")
+    // A refusal resolves the gate as "nothing saved" rather than stalling it.
+    // The cost of that is one lost stretch; the cost of stalling is a count
+    // that never starts.
+    onRefused: function(reason) {
+      root.logEvent("activity state unreadable, ignoring it: " + reason)
+      root.noteActivityState("")
+    }
+    onWriteRefused: function(reason) {
+      root.logEvent("activity state not written: " + reason)
+    }
+  }
+
   property bool stateDirReady: false
 
   Process {
@@ -871,6 +984,7 @@ Item {
     root.scheduleConfig = parsed.schedule
     root.activityConfig = parsed.activity
     root.configLoaded = true
+    root.maybeRestoreActivity()
     root.maybeResume()
     root.refreshSound()
   }

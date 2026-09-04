@@ -896,3 +896,68 @@ function activityReadout(cfg, state, lastTickMs, nowMs, isAway) {
   out.due = afterMs > 0 && activeMs >= afterMs
   return out
 }
+
+// The activity count as it was last written down.
+//
+// Shaped like parseState and defensive for the same reason: this file lives at
+// a predictable path, and anything at all can be sitting in it.
+function parseActivityState(raw) {
+  var none = { activeMs: 0, idleMs: 0, at: 0 }
+  var text = String(raw || "").trim()
+  if (text === "") return none
+  try {
+    var parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== "object") return none
+    var active = Number(parsed.activeMs)
+    var idle = Number(parsed.idleMs)
+    var at = Number(parsed.at)
+    return {
+      activeMs: isFinite(active) && active > 0 ? active : 0,
+      idleMs: isFinite(idle) && idle > 0 ? idle : 0,
+      at: isFinite(at) && at > 0 ? at : 0
+    }
+  } catch (e) {
+    return none
+  }
+}
+
+// What the count should be when the shell comes back up.
+//
+// Without this a shell restart handed out a fresh stretch, and the shell
+// restarts on a theme change or any edit to a plugin -- which made the one
+// thing that is not supposed to be a choice into a choice, and an easy one.
+//
+// The rule is the tick's rule, applied to the whole gap at once: time the
+// shell was not running is time away from the machine, because there is no
+// honest way to call it anything else. Away long enough and being away was
+// the break, so the stretch is gone; short of that it is picked up where it
+// was left. A reboot needs no special case -- the machine being off is the
+// longest kind of away there is, and if it was off for two minutes then two
+// minutes is all that is owed to it.
+function restoreActivity(cfg, saved, nowMs) {
+  var out = { activeMs: 0, idleMs: 0, gapMs: 0, kept: false }
+  if (!cfg || cfg.enabled !== true) return out
+
+  var s = saved || {}
+  var at = Number(s.at) || 0
+  var activeMs = Number(s.activeMs) || 0
+  var idleMs = Number(s.idleMs) || 0
+  if (!(at > 0) || !(activeMs > 0)) return out
+
+  var gap = (Number(nowMs) || 0) - at
+  // A clock that moved backwards buys nothing. The strict reading is the
+  // right one here: the alternative is that setting the clock back is a way
+  // of putting the break off.
+  if (!(gap > 0)) gap = 0
+  out.gapMs = gap
+
+  var resetMs = Math.max(0, Number(cfg.idleResetMinutes) || 0) * 60000
+  idleMs += gap
+  // Away long enough that being away was the break.
+  if (resetMs > 0 && idleMs >= resetMs) return out
+
+  out.activeMs = activeMs
+  out.idleMs = idleMs
+  out.kept = true
+  return out
+}

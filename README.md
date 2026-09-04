@@ -133,12 +133,13 @@ processes it starts are `mkdir`/`chmod` for its state directory,
 | `Model.js`               | Duration parsing, formatting, config, and the ripple math |
 | `sounds/`                | Drop audio here to give the lock a soundtrack (optional)  |
 
-Two files outside this directory:
+Three files outside this directory:
 
 | Path                                            | What it is                        |
 |-------------------------------------------------|-----------------------------------|
 | `~/.config/omarchy/zds.blackwall.json`          | User config (the toggle)          |
 | `~/.local/state/omarchy/blackwall/deadline`     | Live lock state (mode `0600`)     |
+| `~/.local/state/omarchy/blackwall/activity`     | The break count (mode `0600`)     |
 
 Everything under `~/.config/omarchy/plugins/` hot-reloads on save. If a change
 does not take, `omarchy-shell shell rescanPlugins` forces a reload — but note
@@ -173,12 +174,16 @@ A file is refused if it is not a regular file, is not owned by you, is writable
 by other users, is larger than 64 KiB, or sits in a directory other users can
 write to. The state directory is created `0700`.
 
-The two files get deliberately different treatment:
+The files get deliberately different treatment:
 
-- **`deadline`** is Blackwall's own, in a directory nothing else uses. Symlinks
+- **`deadline`** and **`activity`** are Blackwall's own, in a directory nothing
+  else uses. Symlinks
   are refused. A write may take the name back from something planted there —
-  refusing forever would quietly stop the deadline persisting, which would turn
-  restarting the shell into a way out of a lock.
+  refusing forever would quietly stop them persisting, which would turn
+  restarting the shell into a way out of a lock or a break. They are kept apart
+  rather than folded into one file: they answer different questions, are
+  written on completely different rhythms, and a counter that will not parse
+  must not cost a lock that is still owed.
 - **`zds.blackwall.json`** is *yours*. Symlinks are allowed, so keeping it in a
   dotfiles repo and linking it into place works; the link has to resolve inside
   `$HOME` and the target still faces every check above. Nothing there is ever
@@ -423,8 +428,19 @@ onto it, not a second copy, and nothing on this surface can reset it or put it
 off. While the compositor reports nobody at the machine the count is held
 rather than running, and both panels say so instead of quietly freezing.
 
-The count is a session count: it starts from zero when the shell starts, and
-the shell restarts on a theme change or a plugin edit.
+The count is written down, so it survives. This matters more than it sounds:
+the shell restarts on a theme change, on any edit to any plugin, and on a
+crash, and while the stretch lived only in memory each one of those handed out
+a fresh three hours — which made the one thing deliberately not a choice into a
+choice, and an easy one.
+
+The rule on the way back up is the same rule the clock uses while running:
+time the shell was not there is time away from the machine, because there is no
+honest way to call it anything else. Away past the reset and being away *was*
+the break, so the stretch is gone. Short of it, the count is picked up where it
+was left. A reboot needs no special case — the machine being off is the longest
+kind of away there is, and if it was off for two minutes then two minutes is
+all that is owed to it.
 
 ### The resolver sweep
 

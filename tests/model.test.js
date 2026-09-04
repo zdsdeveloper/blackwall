@@ -667,6 +667,104 @@ check("readout: due agrees with the decision that acts",
        Model.activityDecision(ACT({ enabled: true, breakAfterMinutes: 180 }), dueState, 0, 1000).action],
       [true, "demand"]);
 
+// ------------------------------------------- carrying the count across a restart
+//
+// The shell restarts on a theme change or any plugin edit. Until this existed,
+// each one handed out a fresh three hours -- which made the one thing that is
+// deliberately not a choice into a choice.
+
+check("saved: nothing written is nothing to carry",
+      Model.parseActivityState(""), { activeMs: 0, idleMs: 0, at: 0 });
+check("saved: junk in the file is nothing to carry",
+      Model.parseActivityState("}{ not json"), { activeMs: 0, idleMs: 0, at: 0 });
+check("saved: a JSON scalar is not a state either",
+      Model.parseActivityState("42"), { activeMs: 0, idleMs: 0, at: 0 });
+check("saved: negatives and nonsense are read as zero",
+      Model.parseActivityState('{"activeMs":-5,"idleMs":"x","at":0}'),
+      { activeMs: 0, idleMs: 0, at: 0 });
+check("saved: a real one round-trips",
+      Model.parseActivityState('{"version":1,"activeMs":5400000,"idleMs":0,"at":1000}'),
+      { activeMs: 90 * MIN, idleMs: 0, at: 1000 });
+
+const RCFG = ACT({ breakAfterMinutes: 180, idleResetMinutes: 15 });
+const SAVED = (activeMinutes, at, idleMinutes) =>
+  ({ activeMs: activeMinutes * MIN, idleMs: (idleMinutes || 0) * MIN, at: at });
+
+// The one that matters: a quick restart keeps the stretch.
+check("restore: a shell restart does not hand out a fresh stretch",
+      Model.restoreActivity(RCFG, SAVED(147, 1000), 1000 + 20000).activeMs, 147 * MIN);
+check("restore: and says so",
+      Model.restoreActivity(RCFG, SAVED(147, 1000), 1000 + 20000).kept, true);
+check("restore: the gap counts as time away",
+      Model.restoreActivity(RCFG, SAVED(147, 1000), 1000 + 20000).idleMs, 20000);
+
+// Away long enough is the break, however the machine spent it.
+check("restore: away past the reset and the stretch is gone",
+      Model.restoreActivity(RCFG, SAVED(147, 1000), 1000 + 16 * MIN).activeMs, 0);
+check("restore: which is not the same as having carried nothing",
+      Model.restoreActivity(RCFG, SAVED(147, 1000), 1000 + 16 * MIN).gapMs, 16 * MIN);
+check("restore: an overnight shutdown is simply a long time away",
+      Model.restoreActivity(RCFG, SAVED(179, 1000), 1000 + 9 * 3600000).kept, false);
+// A fast reboot is a short absence and nothing more. The machine being off is
+// the longest kind of away there is; two minutes of it is worth two minutes.
+check("restore: a two minute reboot keeps the stretch",
+      Model.restoreActivity(RCFG, SAVED(179, 1000), 1000 + 2 * MIN).activeMs, 179 * MIN);
+// Idle already banked before the restart adds to the gap rather than being
+// dropped: eleven minutes away then a five minute restart is sixteen away.
+check("restore: idle already banked is not forgotten",
+      Model.restoreActivity(RCFG, SAVED(147, 1000, 11), 1000 + 5 * MIN).kept, false);
+
+// A stretch that was already owed is still owed. Restarting the shell is not
+// how you get out of a break.
+//
+// Not on the restored state itself: that carries the gap as time away, and a
+// decision never demands while they are away -- they would be having the
+// break. It fires on the first tick that finds them back at the machine, one
+// tick and fifteen seconds after the shell came up, which is the same answer
+// arrived at honestly.
+const owed = Model.restoreActivity(RCFG, SAVED(200, 1000), 1000 + MIN);
+const backAtIt = Model.activityTick(RCFG, { activeMs: owed.activeMs, idleMs: owed.idleMs }, false, 15000);
+check("restore: a break already owed is not waved off by restarting",
+      [owed.kept, Model.activityDecision(RCFG, backAtIt, 0, 1000).action],
+      [true, "demand"]);
+
+check("restore: a clock moved backwards buys nothing",
+      Model.restoreActivity(RCFG, SAVED(147, 9 * MIN), MIN).activeMs, 147 * MIN);
+check("restore: nothing saved is a fresh start",
+      Model.restoreActivity(RCFG, SAVED(0, 1000), 5000).kept, false);
+check("restore: no timestamp is not trusted",
+      Model.restoreActivity(RCFG, SAVED(147, 0), 5000).kept, false);
+check("restore: junk does not crash",
+      Model.restoreActivity(RCFG, null, 5000).activeMs, 0);
+check("restore: nothing is carried while breaks are off",
+      Model.restoreActivity(Model.parseActivity({ breakAfterMinutes: 180 }), SAVED(147, 1000), 2000).kept,
+      false);
+
+// The same round-trip check the config gets, for the same reason: a key the
+// writer emits and the parser ignores is a stretch that silently stops
+// carrying, and nothing about the running shell would look wrong.
+const activityWrite = (() => {
+  const start = serviceSrc.indexOf("activityFile.write(JSON.stringify({");
+  if (start < 0) return null;
+  const end = serviceSrc.indexOf("}) +", start);
+  return end < 0 ? null : serviceSrc.slice(start, end);
+})();
+
+check("round trip: the activity writer was found in Service.qml", activityWrite !== null, true);
+
+if (activityWrite) {
+  const written = new Set(
+    [...activityWrite.matchAll(/^\s{6}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map(m => m[1]));
+  // `version` is written and deliberately not read back: the reader is
+  // defensive about every field anyway, so there is nothing for it to gate.
+  written.delete("version");
+  const read = Object.keys(Model.parseActivityState("{}"));
+  check("round trip: everything the restore reads is also written",
+        read.filter(k => !written.has(k)), []);
+  check("round trip: and nothing is written that the restore ignores",
+        [...written].filter(k => read.indexOf(k) === -1), []);
+}
+
 // -----------------------------------------------------------------------------
 
 if (failures > 0) {
