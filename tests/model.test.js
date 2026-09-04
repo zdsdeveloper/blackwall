@@ -491,6 +491,39 @@ check("decide: no warning while already locked", decide(soon, at(4, 9, 59), true
 // Once it is open, locking is the answer rather than warning about it.
 check("decide: an open window locks rather than warns", decide(soon, at(4, 10, 30), false).action, "lock");
 
+// ------------------------------------------- the config round trip, checked
+//
+// Three times now a key has existed in parseConfig and not in the writer, and
+// each time the next save of any unrelated setting silently deleted it:
+// `soundPath` was the first, `agents` the second (which would have erased the
+// operator's own agent the moment they flipped a toggle), and an empty
+// schedule literal the third. A comment above writeConfig warns about exactly
+// this and did not prevent any of them.
+//
+// So the writer is read from disk and checked against the parser. This is the
+// only test here that reaches outside Model.js, and it earns that.
+
+const serviceSrc = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8");
+const writeBlock = (() => {
+  const start = serviceSrc.indexOf("configFile.write(JSON.stringify({");
+  if (start < 0) return null;
+  // To the closing of the stringify call.
+  const end = serviceSrc.indexOf("}, null, 2)", start);
+  return end < 0 ? null : serviceSrc.slice(start, end);
+})();
+
+check("round trip: the writer was found in Service.qml", writeBlock !== null, true);
+
+if (writeBlock) {
+  // Top-level keys the writer emits.
+  const written = new Set(
+    [...writeBlock.matchAll(/^\s{6}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map(m => m[1]));
+  const parsed = Object.keys(Model.parseConfig("{}"));
+  const missing = parsed.filter(k => !written.has(k));
+  check("round trip: every key the parser produces is also written",
+        missing, []);
+}
+
 // -----------------------------------------------------------------------------
 
 if (failures > 0) {
