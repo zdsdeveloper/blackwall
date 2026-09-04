@@ -156,3 +156,53 @@ class TestRenderBothFamilies(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOperatorBytesArePreserved(unittest.TestCase):
+    """The file belongs to the operator; NetWatch owns one region of it.
+
+    apply() read with errors="replace" and wrote back as UTF-8, so any byte
+    outside UTF-8 anywhere in the file -- a latin-1 comment, a hostname in
+    another encoding -- became U+FFFD on read and was written back as U+FFFD,
+    destroying the original bytes on a file nobody asked us to rewrite. The
+    promise that lines outside our region are never touched was not being kept.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "hosts")
+
+    def test_bytes_that_are_not_utf8_survive_a_write(self):
+        original = b"127.0.0.1\tlocalhost\n# caf\xe9 \xff\xfe\n10.0.0.5\tnas\n"
+        with open(self.path, "wb") as f:
+            f.write(original)
+        hosts.apply(self.path, ["example.com"])
+        after = open(self.path, "rb").read()
+        for line in original.split(b"\n"):
+            if line.strip():
+                self.assertIn(line, after)
+
+    def test_no_replacement_characters_are_introduced(self):
+        with open(self.path, "wb") as f:
+            f.write(b"127.0.0.1\tlocalhost\n# \xe9\xff\n")
+        hosts.apply(self.path, ["example.com"])
+        self.assertNotIn("�".encode("utf-8"), open(self.path, "rb").read())
+
+    def test_the_managed_block_is_still_written(self):
+        with open(self.path, "wb") as f:
+            f.write(b"127.0.0.1\tlocalhost\n# \xe9\n")
+        hosts.apply(self.path, ["example.com"])
+        after = open(self.path, "rb").read()
+        self.assertIn(b"0.0.0.0 example.com", after)
+        self.assertIn(hosts.BEGIN.encode(), after)
+
+    def test_a_second_pass_is_still_a_no_op(self):
+        # If the round trip were lossy, the file would differ every cycle and
+        # the daemon would rewrite /etc/hosts for ever.
+        with open(self.path, "wb") as f:
+            f.write(b"127.0.0.1\tlocalhost\n# \xe9\xff\n")
+        hosts.apply(self.path, ["example.com"])
+        first = open(self.path, "rb").read()
+        changed = hosts.apply(self.path, ["example.com"])
+        self.assertFalse(changed)
+        self.assertEqual(open(self.path, "rb").read(), first)

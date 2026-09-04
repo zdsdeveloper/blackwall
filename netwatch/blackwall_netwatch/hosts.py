@@ -95,7 +95,21 @@ def splice(current, block):
 
 def apply(path, domains):
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        # surrogateescape, not replace.
+        #
+        # This file belongs to the operator; NetWatch owns one region of it and
+        # promises never to touch the rest. errors="replace" broke that
+        # promise silently: any byte outside UTF-8 anywhere in the file -- a
+        # latin-1 comment, a hostname in some other encoding -- became U+FFFD
+        # on read and was then written back as U+FFFD, destroying the original
+        # bytes permanently, on a file the operator never asked us to rewrite.
+        #
+        # surrogateescape maps undecodable bytes to lone surrogates and
+        # encodes them back to exactly the bytes they came from, so the whole
+        # file round-trips byte for byte and every line outside our own region
+        # is returned untouched. The managed block is ASCII, so the splicing
+        # above is unaffected.
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
             current = f.read()
         mode = os.stat(path).st_mode & 0o777
     except FileNotFoundError:
@@ -109,9 +123,12 @@ def apply(path, domains):
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".netwatch-", suffix=".tmp")
     try:
-        # utf-8 explicitly: `current` was read with errors="replace", so it can
-        # carry U+FFFD, which a non-utf-8 locale encoding would refuse to write.
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # utf-8 with the matching surrogateescape: `current` was read that
+        # way, so it can carry lone surrogates standing for bytes that are not
+        # valid UTF-8. Encoding them back is what returns the operator's own
+        # lines exactly as they were found; a plain utf-8 write would raise on
+        # them instead.
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
             f.write(desired)
             # On the descriptor we already hold, not on the path: a path-based
             # chmod is a second lookup that a symlink planted in between could
