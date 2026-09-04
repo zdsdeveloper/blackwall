@@ -68,6 +68,19 @@ Panel {
   readonly property bool persistAcrossReboot: service ? service.persistAcrossReboot === true : true
   readonly property bool soundEnabled: service ? service.soundEnabled === true : true
 
+  // What the schedule is about to do, for the menu. Empty when nothing is
+  // scheduled, so the row simply is not there rather than saying "off".
+  readonly property string scheduleLine: {
+    if (!root.service || root.service.scheduleEnabled !== true) return ""
+    var a = root.service.activeWindow
+    if (a) return a.label + " — " + a.endsInMinutes + " min left"
+    var n = root.service.nextWindow
+    if (!n) return ""
+    if (n.inMinutes < 60) return n.label + " in " + n.inMinutes + " min"
+    var h = Math.floor(n.inMinutes / 60)
+    return n.label + " in " + h + "h " + (n.inMinutes % 60) + "m"
+  }
+
   function toggleSound() {
     if (root.service) root.service.setSoundEnabled(!root.soundEnabled)
   }
@@ -251,6 +264,14 @@ Panel {
           }
 
           PanelSeparator { foreground: root.barForeground }
+
+          PanelSectionHeader {
+            width: parent.width
+            visible: root.scheduleLine !== ""
+            text: "SCHEDULED  ·  " + root.scheduleLine
+            foreground: root.barForeground
+            fontFamily: root.bar.fontFamily
+          }
 
           Toggle {
             width: parent.width

@@ -112,7 +112,12 @@ function parseConfig(raw) {
     soundPath: "",
     soundEnabled: true,
     challengePhrase: DEFAULT_CHALLENGE_PHRASE,
-    agents: {}
+    agents: {},
+    // Derived, never written out by hand. A literal here drifted from
+    // parseSchedule the moment that grew a field, which is the same shape of
+    // fault as a key the parser knows and the writer does not: two places
+    // holding the same truth, and only one of them updated.
+    schedule: parseSchedule({})
   }
   var text = String(raw || "").trim()
   if (text === "") return defaults
@@ -135,7 +140,8 @@ function parseConfig(raw) {
       // the station greets. Anything that is not a plain object reads as no
       // agents configured rather than taking the config down with it.
       agents: (parsed.agents && typeof parsed.agents === "object"
-               && !Array.isArray(parsed.agents)) ? parsed.agents : {}
+               && !Array.isArray(parsed.agents)) ? parsed.agents : {},
+      schedule: parseSchedule(parsed.schedule)
     }
   } catch (e) {
     return defaults
@@ -511,8 +517,12 @@ function normaliseWindow(raw) {
 }
 
 function parseSchedule(raw) {
-  var off = { enabled: false, warnSeconds: 120, windows: [] }
-  if (!raw || typeof raw !== "object") return off
+  // Anything unusable is treated as an empty schedule and then built the same
+  // way as a real one, rather than short-circuiting to a literal. That literal
+  // existed, and it drifted the moment this function grew a field -- the third
+  // time in this file that the same truth written in two places has gone out
+  // of step. One construction path, so there is nothing to keep in step.
+  if (!raw || typeof raw !== "object") raw = {}
   var windows = []
   if (Array.isArray(raw.windows)) {
     for (var i = 0; i < raw.windows.length; i++) {
@@ -521,13 +531,43 @@ function parseSchedule(raw) {
     }
   }
   var warn = Number(raw.warnSeconds)
+  var cap = Number(raw.maxLockMinutes)
+  var gap = Number(raw.gapSeconds)
   return {
     enabled: raw.enabled === true,
     // Clamped: no warning at all is a lock that arrives out of nowhere, and an
     // hour of warning is not a warning.
     warnSeconds: isFinite(warn) ? clamp(Math.round(warn), 0, 900) : 120,
+
+    // The safety valve, and the reason it exists.
+    //
+    // A scheduled lock runs for what is left of its window, and a window
+    // entered wrong costs exactly that. A bedtime typed 23:30-06:00 with the
+    // wrong days locked this machine for 226 minutes in a single tick, from a
+    // test written to avoid doing that.
+    //
+    // So a lock is taken in stretches of at most maxLockMinutes, with
+    // gapSeconds of daylight between them. A window you meant still holds --
+    // it re-engages as soon as the gap closes, and you would have to
+    // deliberately intervene every stretch to escape it. A window you did not
+    // mean costs one stretch, and then hands you a moment to turn it off.
+    //
+    // The gap is the whole point. A cap that re-engaged instantly would be
+    // continuous lockout with extra steps.
+    maxLockMinutes: isFinite(cap) ? clamp(Math.round(cap), 1, 720) : 30,
+    gapSeconds: isFinite(gap) ? clamp(Math.round(gap), 5, 600) : 45,
     windows: windows
   }
+}
+
+// How long the next scheduled stretch should run, in minutes: what is left of
+// the window, but never more than the cap.
+function scheduledStretch(minutesLeft, maxLockMinutes) {
+  var left = Math.floor(Number(minutesLeft))
+  if (!isFinite(left) || left < 1) return 0
+  var cap = Math.floor(Number(maxLockMinutes))
+  if (!isFinite(cap) || cap < 1) cap = 30
+  return Math.min(left, cap)
 }
 
 // How many minutes into the week a moment is, 0 = Sunday 00:00.

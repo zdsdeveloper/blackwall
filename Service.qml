@@ -121,6 +121,133 @@ Item {
   // writes the file, and a key this file does not carry is a key this file
   // deletes the next time anything is saved.
   property var agents: ({})
+
+  // ---- the schedule --------------------------------------------------------
+  //
+  // Windows the wall closes by itself. Two sources, deliberately kept apart:
+  //
+  //   `scheduleConfig.windows` are the operator's own, saved in the config
+  //   file and edited by hand.
+  //
+  //   `providedWindows` are pushed in over IPC by another plugin and held only
+  //   in memory. Prayer times will arrive this way -- they are astronomical,
+  //   they depend on where you are and which calculation you follow, and none
+  //   of that belongs in this file. A provider recomputes them daily and
+  //   pushes; nothing here needs to understand them.
+  //
+  // Keeping the provided set out of the config file also means two writers
+  // never fight over it.
+  property var scheduleConfig: ({ enabled: false, warnSeconds: 120, windows: [] })
+  property var providedWindows: ({})
+
+  readonly property var effectiveWindows: {
+    var out = (root.scheduleConfig && root.scheduleConfig.windows) || []
+    var merged = out.slice()
+    for (var key in root.providedWindows) {
+      if (!root.providedWindows.hasOwnProperty(key)) continue
+      var set = root.providedWindows[key]
+      for (var i = 0; i < set.length; i++) merged.push(set[i])
+    }
+    return merged
+  }
+
+  readonly property bool scheduleEnabled:
+    root.scheduleConfig && root.scheduleConfig.enabled === true
+
+  // The window covering right now, or null. Recomputed on the tick rather than
+  // bound to a clock, so nothing here re-evaluates sixty times a second.
+  property var activeWindow: null
+  property var nextWindow: null
+
+  // What has already been warned about, so a warning is given once per opening
+  // rather than every fifteen seconds for the two minutes before it.
+  property string warnedFor: ""
+  // When the wall may next take a scheduled stretch. Set to the end of the
+  // stretch plus the gap, so there is always a moment of daylight between one
+  // and the next.
+  //
+  // The daylight is the recovery path, and it is the whole reason the cap
+  // exists. A mistyped window took this machine for 226 minutes in one tick,
+  // from a test written to avoid exactly that. Capped stretches with a gap
+  // mean a window you meant still effectively holds -- you would have to
+  // intervene deliberately every stretch to get out of it -- while a window
+  // you did not mean costs one stretch and then hands you a chance to turn it
+  // off.
+  property double scheduleGapUntil: 0
+
+  function scheduleKeyFor(entry) {
+    return entry ? (entry.label + "@" + Math.floor(Date.now() / 60000 / 1440)) : ""
+  }
+
+  function scheduleTick() {
+    if (!root.scheduleEnabled) {
+      root.activeWindow = null
+      root.nextWindow = null
+      return
+    }
+    var now = new Date()
+    var windows = root.effectiveWindows
+    root.activeWindow = Model.activeWindowAt(windows, now)
+    root.nextWindow = Model.nextWindowAt(windows, now)
+
+    // --- act ---------------------------------------------------------------
+    if (root.activeWindow) {
+      if (root.holding) {
+        // Already behind the wall. The window will still be here when it
+        // comes down.
+        return
+      }
+      if (Date.now() < root.scheduleGapUntil) {
+        // Inside the daylight between stretches. This is deliberate.
+        return
+      }
+      var stretch = Model.scheduledStretch(root.activeWindow.endsInMinutes,
+                                           root.scheduleConfig.maxLockMinutes)
+      // Under a minute is not worth a lock: engage has its own floor and
+      // would hold past the end of the window.
+      if (stretch < 1) return
+      root.scheduleGapUntil = Date.now() + stretch * 60000
+                            + root.scheduleConfig.gapSeconds * 1000
+      logEvent("schedule: " + root.activeWindow.label + " -- locking for "
+               + stretch + " min of "
+               + root.activeWindow.endsInMinutes + " remaining")
+      root.engage(stretch * 60)
+      return
+    }
+
+    // Out of any window: the next one starts fresh.
+    root.scheduleGapUntil = 0
+
+    // --- warn --------------------------------------------------------------
+    if (!root.nextWindow || root.holding) return
+    var seconds = root.nextWindow.inMinutes * 60
+    if (seconds > root.scheduleConfig.warnSeconds) {
+      root.warnedFor = ""
+      return
+    }
+    var warnKey = root.nextWindow.label + "|" + root.nextWindow.inMinutes
+    if (root.warnedFor.indexOf(root.nextWindow.label + "|") === 0) return
+    root.warnedFor = warnKey
+    var mins = Math.max(1, root.nextWindow.inMinutes)
+    logEvent("schedule: warning for " + root.nextWindow.label)
+    warnProc.command = ["notify-send", "-u", "critical", "-a", "Blackwall",
+                        "The Blackwall closes in " + mins
+                        + (mins === 1 ? " minute" : " minutes"),
+                        root.nextWindow.label + " -- save what you are doing."]
+    warnProc.running = true
+  }
+
+  Process { id: warnProc }
+
+  Timer {
+    // Fifteen seconds is fine: the warning is measured in minutes and a window
+    // that opens fifteen seconds late is a window that opened.
+    interval: 15000
+    repeat: true
+    running: root.scheduleEnabled
+    triggeredOnStart: true
+    onTriggered: root.scheduleTick()
+  }
   property bool configLoaded: false
 
   // What a breach challenge asks to be typed. Owned by the same config file,
@@ -574,6 +701,7 @@ Item {
     root.soundEnabled = parsed.soundEnabled
     root.challengePhrase = parsed.challengePhrase
     root.agents = parsed.agents
+    root.scheduleConfig = parsed.schedule
     root.configLoaded = true
     root.maybeResume()
     root.refreshSound()
@@ -600,7 +728,17 @@ Item {
       // added to the parser and not to here, which meant the next save of any
       // other setting silently deleted whoever was on file -- the exact
       // failure the note above describes, made again.
-      agents: root.agents
+      agents: root.agents,
+      // Same reasoning as agents: a key this file does not carry is a key it
+      // deletes. Only the operator's own windows are written -- what a
+      // provider pushed is theirs to push again.
+      schedule: {
+        enabled: root.scheduleConfig.enabled,
+        warnSeconds: root.scheduleConfig.warnSeconds,
+        maxLockMinutes: root.scheduleConfig.maxLockMinutes,
+        gapSeconds: root.scheduleConfig.gapSeconds,
+        windows: root.scheduleConfig.windows
+      }
     }, null, 2) + "\n")
   }
 
@@ -786,6 +924,76 @@ Item {
 
     function persist(): string {
       return root.persistAcrossReboot ? "true" : "false"
+    }
+
+    function schedule(): string {
+      if (!root.scheduleEnabled) return "off"
+      var parts = []
+      parts.push(root.effectiveWindows.length + " window(s)")
+      if (root.activeWindow)
+        parts.push("NOW: " + root.activeWindow.label + ", "
+                   + root.activeWindow.endsInMinutes + " min left"
+                   + " (stretches of " + root.scheduleConfig.maxLockMinutes + ")")
+      else if (root.nextWindow)
+        parts.push("next: " + root.nextWindow.label + " in "
+                   + root.nextWindow.inMinutes + " min")
+      return parts.join("  |  ")
+    }
+
+    // How another plugin hands windows in: one window per call, under the
+    // provider's own name, held in memory only.
+    //
+    // It is not JSON, and that is not a style choice. Quickshell's IPC parses
+    // its arguments -- `[a,b]` is read as an argument LIST and split on the
+    // commas, and a lone `[{...}]` arrives with the brackets eaten. Passing a
+    // JSON array through this channel is not possible, so the shape that
+    // survives it is plain scalars: no brackets, no commas. `days` is
+    // plus-separated for the same reason.
+    //
+    // A provider recomputes on its own schedule, calls clearWindows, then adds
+    // what it has. It can only ADD windows -- it cannot touch the operator's
+    // own, and it cannot shorten or cancel a lock that is already up.
+    function provideWindow(source: string, label: string, start: string,
+                           end: string, days: string): string {
+      var name = String(source || "").trim()
+      if (name === "")
+        return "usage: blackwall provideWindow <source> <label> <HH:MM> <HH:MM> <all|mon+tue+...>"
+
+      // Every argument is required -- Quickshell's IPC has no optional
+      // parameters -- so "all" is the word for every day rather than an
+      // omitted argument or an empty string a shell would swallow.
+      var spec = String(days || "").trim().toLowerCase()
+      var dayList = (spec === "" || spec === "all" || spec === "*")
+        ? []
+        : spec.split("+").filter(function (d) { return String(d).trim() !== "" })
+      var cleaned = Model.parseSchedule({
+        enabled: true,
+        windows: [{ label: String(label || name), start: start, end: end,
+                    days: dayList }]
+      }).windows
+      if (cleaned.length === 0) return "not a window: check the times are HH:MM"
+
+      var next = ({})
+      for (var key in root.providedWindows)
+        if (root.providedWindows.hasOwnProperty(key)) next[key] = root.providedWindows[key]
+      next[name] = (next[name] || []).concat(cleaned)
+      root.providedWindows = next
+      root.scheduleTick()
+      logEvent("schedule: " + name + " added " + cleaned[0].label)
+      return String(next[name].length)
+    }
+
+    function clearWindows(source: string): string {
+      var name = String(source || "").trim()
+      if (name === "") return "usage: blackwall clearWindows <source>"
+      var next = ({})
+      for (var key in root.providedWindows)
+        if (root.providedWindows.hasOwnProperty(key) && key !== name)
+          next[key] = root.providedWindows[key]
+      root.providedWindows = next
+      root.scheduleTick()
+      logEvent("schedule: " + name + " cleared")
+      return "cleared"
     }
 
     function soundOn(): string {

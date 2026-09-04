@@ -79,9 +79,9 @@ check("state: missing bootId reads as unknown", Model.parseState('{"deadline":99
 // ---------------------------------------------------------------- the config
 
 const DEFAULT = Model.DEFAULT_CHALLENGE_PHRASE;
-check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {} });
-check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {} });
-check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {} });
+check("config: empty gives defaults", Model.parseConfig(""), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] } });
+check("config: malformed gives defaults", Model.parseConfig("{oh no"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] } });
+check("config: a json array gives defaults", Model.parseConfig("[]"), { persistAcrossReboot: true, soundPath: "", soundEnabled: true, challengePhrase: DEFAULT, agents: {}, schedule: { enabled: false, warnSeconds: 120, maxLockMinutes: 30, gapSeconds: 45, windows: [] } });
 check("config: persist can be turned off", Model.parseConfig('{"persistAcrossReboot":false}').persistAcrossReboot, false);
 // Anything that is not literally false persists, because persisting is the
 // behaviour the plugin shipped with and the safer default.
@@ -394,6 +394,42 @@ check("schedule: warning defaults to two minutes", Model.parseSchedule({}).warnS
 // No warning is a lock out of nowhere; an hour of warning is not a warning.
 check("schedule: warning is clamped low", Model.parseSchedule({ warnSeconds: -50 }).warnSeconds, 0);
 check("schedule: warning is clamped high", Model.parseSchedule({ warnSeconds: 99999 }).warnSeconds, 900);
+
+check("config: a schedule is carried through",
+      Model.parseConfig('{"schedule":{"enabled":true,"windows":[{"start":"23:30","end":"06:00"}]}}').schedule.windows.length, 1);
+check("config: no schedule is a disabled one",
+      Model.parseConfig("{}").schedule.enabled, false);
+// The same failure that nearly ate `agents`: a key the parser knows and the
+// writer does not is a key that gets deleted on the next save.
+check("config: a junk schedule does not throw",
+      Model.parseConfig('{"schedule":42}').schedule.windows.length, 0);
+
+// --- the safety valve ---
+//
+// A scheduled lock used to run for whatever was left of its window, so a
+// window entered wrong cost exactly that: a mistyped bedtime took this machine
+// for 226 minutes in one tick. Locks are taken in capped stretches with a gap
+// between them, so a mistake costs one stretch and then hands you a moment.
+
+check("cap: defaults to half an hour", Model.parseSchedule({}).maxLockMinutes, 30);
+check("cap: a gap by default", Model.parseSchedule({}).gapSeconds, 45);
+check("cap: can be raised", Model.parseSchedule({ maxLockMinutes: 90 }).maxLockMinutes, 90);
+check("cap: cannot be zero", Model.parseSchedule({ maxLockMinutes: 0 }).maxLockMinutes, 1);
+check("cap: cannot exceed twelve hours", Model.parseSchedule({ maxLockMinutes: 99999 }).maxLockMinutes, 720);
+// A gap of zero would be continuous lockout with extra steps.
+check("cap: the gap has a floor", Model.parseSchedule({ gapSeconds: 0 }).gapSeconds, 5);
+check("cap: the gap has a ceiling", Model.parseSchedule({ gapSeconds: 99999 }).gapSeconds, 600);
+check("cap: junk falls back", Model.parseSchedule({ maxLockMinutes: "lots" }).maxLockMinutes, 30);
+
+check("stretch: a short window is taken whole", Model.scheduledStretch(12, 30), 12);
+check("stretch: a long window is capped", Model.scheduledStretch(226, 30), 30);
+check("stretch: exactly the cap", Model.scheduledStretch(30, 30), 30);
+check("stretch: under a minute is not worth a lock", Model.scheduledStretch(0, 30), 0);
+check("stretch: a negative is not a lock", Model.scheduledStretch(-5, 30), 0);
+check("stretch: junk is not a lock", Model.scheduledStretch("soon", 30), 0);
+// The 226 minutes that started this, under the default cap.
+check("stretch: the bedtime that caused this now costs 30, not 226",
+      Model.scheduledStretch(226, Model.parseSchedule({}).maxLockMinutes), 30);
 
 // -----------------------------------------------------------------------------
 
