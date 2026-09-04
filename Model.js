@@ -739,21 +739,49 @@ function parseActivity(raw) {
   var after = Number(raw.breakAfterMinutes)
   var reset = Number(raw.idleResetMinutes)
   var snooze = Number(raw.snoozeMinutes)
+  var grace = Number(raw.demandGraceSeconds)
   return {
-    // Off unless asked for. A machine that starts nagging the day it updates
-    // is a machine people turn features off on.
+    // Off unless asked for. A machine that starts making demands the day it
+    // updates is a machine people switch features off on.
     enabled: raw.enabled === true,
-    // How long at the keyboard before it says something. Floor of 5 so a
-    // typo cannot make it constant; ceiling of 8 hours because past that it
-    // is not a break reminder.
-    breakAfterMinutes: isFinite(after) ? clamp(Math.round(after), 5, 480) : 60,
-    // How long away counts as having had the break. Short enough that a real
-    // pause resets it, long enough that reading a page does not.
-    idleResetMinutes: isFinite(reset) ? clamp(Math.round(reset), 1, 120) : 5,
-    // How long it stays quiet after being ignored, so declining once is not
-    // answered by asking again a minute later.
-    snoozeMinutes: isFinite(snooze) ? clamp(Math.round(snooze), 1, 240) : 15
+
+    // Whether the break is a suggestion or a fact.
+    //
+    // Suggesting was the first version of this and it was the wrong one: a
+    // notification you can wave away is one you wave away at hour four, which
+    // is exactly when it mattered. Enforced, the choice you are offered is how
+    // long the break is, not whether you take it.
+    enforced: raw.enforced !== false,
+
+    // Three hours at the machine without a real break. Long enough not to
+    // interrupt a morning's work, short enough that a whole evening cannot
+    // disappear. Floor of 30 so it cannot be set to something punitive by
+    // accident, ceiling of 8 hours because past that it is not a break.
+    breakAfterMinutes: isFinite(after) ? clamp(Math.round(after), 30, 480) : 180,
+
+    // How long away counts as the break having happened, and so resets the
+    // count. Fifteen minutes: long enough that making tea does not reset a
+    // three hour stretch, short enough that a real walk away does.
+    idleResetMinutes: isFinite(reset) ? clamp(Math.round(reset), 5, 120) : 15,
+
+    // Only used when suggesting. An enforced break does not get snoozed.
+    snoozeMinutes: isFinite(snooze) ? clamp(Math.round(snooze), 1, 240) : 15,
+
+    // How long the demand waits for an answer before choosing the shortest
+    // break itself. Without this, ignoring the window is a way out of it.
+    demandGraceSeconds: isFinite(grace) ? clamp(Math.round(grace), 15, 600) : 90
   }
+}
+
+// The break lengths offered, in minutes. The shortest is what an unanswered
+// demand settles on, so it is first.
+var BREAK_CHOICES = [15, 20, 30]
+
+function breakSeconds(minutes) {
+  var m = Math.round(Number(minutes))
+  if (!isFinite(m)) m = BREAK_CHOICES[0]
+  // Through the same clamp the wall uses for any other lock.
+  return secondsForMinutes(m)
 }
 
 // Advance the clock by `deltaMs`. Pure: takes a state, returns a new one.
@@ -780,7 +808,7 @@ function activityTick(cfg, state, isIdle, deltaMs) {
   return { activeMs: activeMs + delta, idleMs: 0 }
 }
 
-// Whether to say something now.
+// Whether a break is due, and whether it is a suggestion or a demand.
 function activityDecision(cfg, state, lastPromptMs, nowMs) {
   var none = { action: "none", activeMinutes: 0 }
   if (!cfg || cfg.enabled !== true) return none
@@ -789,6 +817,13 @@ function activityDecision(cfg, state, lastPromptMs, nowMs) {
   if (activeMs < cfg.breakAfterMinutes * 60000) return none
   // Not while they are already away -- they are having the break.
   if (Number(state && state.idleMs) > 0) return none
+
+  // An enforced break is not snoozed. The snooze exists so a suggestion that
+  // was declined does not ask again a minute later; there is nothing to
+  // decline here, and honouring it would mean an ignored demand bought a
+  // quarter of an hour of not being asked.
+  if (cfg.enforced === true) return { action: "demand", activeMinutes: minutes }
+
   var last = Number(lastPromptMs) || 0
   var now = Number(nowMs) || 0
   if (last > 0 && now - last < cfg.snoozeMinutes * 60000) return none

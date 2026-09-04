@@ -192,18 +192,57 @@ Item {
 
     var call = Model.activityDecision(root.activityConfig, root.activityState,
                                       root.activityLastPrompt, now)
-    if (call.action !== "suggest") return
+    if (call.action === "none") return
     root.activityLastPrompt = now
-    logEvent("activity: " + call.activeMinutes + " min at the machine")
-    var hours = Math.floor(call.activeMinutes / 60)
-    var mins = call.activeMinutes % 60
-    var span = hours > 0
-      ? (hours + (hours === 1 ? " hour " : " hours ") + mins + " min")
-      : (mins + " min")
-    breakProc.command = ["notify-send", "-a", "Blackwall",
-                         "You have been at this for " + span,
-                         "Worth a break. Lock the wall from the bar if you want one."]
-    breakProc.running = true
+    logEvent("activity: " + call.activeMinutes + " min at the machine -- "
+             + call.action)
+
+    if (call.action === "suggest") {
+      breakProc.command = ["notify-send", "-a", "Blackwall",
+                           "You have been at this a while",
+                           "Worth a break. Lock the wall from the bar if you want one."]
+      breakProc.running = true
+      return
+    }
+
+    // A demand. Close what they were doing first, then ask how long -- in that
+    // order, because the demand window becomes the active one the moment it
+    // appears and would otherwise be what gets closed.
+    //
+    // closewindow, not kill: it is the same request the window's own close
+    // button sends, so anything with unsaved work still gets to say so. The
+    // wall covers the screen a moment later regardless; closing is about the
+    // video that would otherwise keep playing behind it.
+    closeProc.command = ["bash", "-c",
+      "addr=$(hyprctl activewindow -j | " +
+      "python3 -c 'import json,sys\n" +
+      "try:\n" +
+      "    w = json.load(sys.stdin)\n" +
+      "except Exception:\n" +
+      "    raise SystemExit\n" +
+      "if isinstance(w, dict) and w.get(\"class\") != \"org.quickshell\":\n" +
+      "    print(w.get(\"address\", \"\"))' 2>/dev/null); " +
+      "[ -n \"$addr\" ] && hyprctl dispatch closewindow address:$addr; true"]
+    closeProc.running = true
+
+    breakDemand.activeMinutes = call.activeMinutes
+    breakDemand.graceSeconds = root.activityConfig.demandGraceSeconds
+    breakDemand.demanding = true
+  }
+
+  Process { id: closeProc }
+
+  BreakDemand {
+    id: breakDemand
+    monoFamily: "monospace"
+    onChosen: function (minutes) {
+      logEvent("activity: break of " + minutes + " min")
+      // The count restarts from the break, not from when the wall comes down:
+      // the break is the reset.
+      root.activityState = ({ activeMs: 0, idleMs: 0 })
+      root.activityLastTick = 0
+      root.engage(Model.breakSeconds(minutes))
+    }
   }
 
   Process { id: breakProc }
@@ -1106,6 +1145,19 @@ Item {
       root.scheduleTick()
       logEvent("schedule: " + name + " cleared")
       return "cleared"
+    }
+
+    // Fire the demand now, for seeing what it does without working three
+    // hours first. Safe to expose on a 0666 socket: the only thing it can do
+    // is cause a break. There is no argument that shortens one, and no way to
+    // call it that avoids one.
+    function demandBreak(): string {
+      if (root.holding) return "already behind the wall"
+      root.activityState = ({ activeMs: root.activityConfig.breakAfterMinutes * 60000,
+                              idleMs: 0 })
+      root.activityLastTick = 0
+      root.activityTick()
+      return "demanded"
     }
 
     function breaks(): string {
