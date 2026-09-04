@@ -287,10 +287,26 @@ Item {
       if (root.activityConfig.hasOwnProperty(k)) updated[k] = root.activityConfig[k]
     updated.enabled = next
     root.activityConfig = updated
-    // Turning it on starts the count from now rather than from whenever the
-    // shell happened to load, or from whatever was last written down.
     root.activityLastPrompt = 0
-    root.resetActivityCount()
+
+    // Switching the reminders off does not pay off the stretch.
+    //
+    // It used to: the count went to zero on the way out and started again from
+    // zero on the way back, so flicking the toggle bought a fresh three hours
+    // -- the same hole a shell restart used to be, with a switch on it.
+    //
+    // Off is treated as exactly what it is: nobody watching. Nothing is
+    // counted while it is off, because nothing is being counted; and when it
+    // comes back on, the time it spent off is judged as time away by the same
+    // rule a restart is. Flick it and the stretch is still there. Leave it off
+    // long enough to have actually had a break, and a break is what you had.
+    //
+    // On the way out the record is stamped now, so the gap on the way back is
+    // measured from the moment the watching stopped rather than from the last
+    // tick before it.
+    if (next) root.applySavedCount("switch")
+    else root.persistActivity()
+
     writeConfig()
     logEvent("activity=" + next)
     return next
@@ -785,12 +801,14 @@ Item {
   // parse.
   property int persistedActiveMinute: -1
 
-  // An explicit reset: the count goes to zero and is written down at once.
+  // The one thing that genuinely pays off the stretch: a break that was taken.
+  // Not a restart, not the toggle -- those are both judged as time away and go
+  // through applySavedCount. This is the only caller, and it is the break.
   //
   // It also stands down any restore still in flight. Without that, a stretch
-  // read back off disk a moment later could resurrect one that has just been
-  // paid off by a break -- the two land in whichever order the processes
-  // finish, and only one of those orders is right.
+  // read back off disk a moment later could resurrect the one this break has
+  // just paid off -- the two land in whichever order the processes finish, and
+  // only one of those orders is right.
   function resetActivityCount() {
     root.activityState = ({ activeMs: 0, idleMs: 0 })
     root.activityLastTick = 0
@@ -798,14 +816,61 @@ Item {
     root.persistActivity()
   }
 
+  // The record, as last written. Held in memory as well as on disk because
+  // switching the reminders back on asks it the same question the startup
+  // restore does, and it must not have to go back to the file to do it.
+  property var activitySaved: ({ activeMs: 0, idleMs: 0, at: 0 })
+
   function persistActivity() {
+    var stamp = Date.now()
     root.persistedActiveMinute = root.activeMinutes
-    activityFile.write(JSON.stringify({
-      version: 1,
+    root.activitySaved = ({
       activeMs: Math.round(Number(root.activityState.activeMs) || 0),
       idleMs: Math.round(Number(root.activityState.idleMs) || 0),
-      at: Date.now()
+      at: stamp
+    })
+    activityFile.write(JSON.stringify({
+      version: 1,
+      activeMs: root.activitySaved.activeMs,
+      idleMs: root.activitySaved.idleMs,
+      at: stamp
     }) + "\n")
+  }
+
+  // Pick the count back up from the record, judging the time since it was
+  // written as time away.
+  //
+  // Shared by the startup restore and by switching the reminders back on,
+  // because they are the same question asked of the same record: this count
+  // was true at that moment, how much of it is still owed now. `what` only
+  // names the gap in the log.
+  function applySavedCount(what) {
+    // An explicit resume outranks a restore still in flight. They land in
+    // whichever order the processes finish, and only one of those orders is
+    // right.
+    root.activityRestored = true
+
+    var back = Model.restoreActivity(root.activityConfig, root.activitySaved,
+                                     Date.now())
+    root.activityLastTick = 0
+
+    if (!back.kept) {
+      // Either nothing was recorded, or the gap was long enough that it was
+      // the break. Only worth a line when there was something to lose; a
+      // first run is not an event.
+      if (Number(root.activitySaved.activeMs) > 0)
+        logEvent("activity: " + Math.round(back.gapMs / 60000)
+                 + " min away across the " + what + " -- the stretch reset")
+      root.activityState = ({ activeMs: 0, idleMs: 0 })
+      root.persistActivity()
+      return
+    }
+
+    root.activityState = ({ activeMs: back.activeMs, idleMs: back.idleMs })
+    // The count did not move; the record of it is still current. Restamping
+    // the minute here stops the next tick writing the same figure back out.
+    root.persistedActiveMinute = root.activeMinutes
+    logEvent("activity: resumed at " + root.activeMinutes + " min at the machine")
   }
 
   // Two inputs, landing in whichever order they finish: the file and the
@@ -824,26 +889,19 @@ Item {
   function maybeRestoreActivity() {
     if (root.activityRestored) return
     if (!root.activityRead || !root.configLoaded) return
-    root.activityRestored = true
 
-    var saved = Model.parseActivityState(root.activityRaw)
-    var back = Model.restoreActivity(root.activityConfig, saved, Date.now())
+    // Read whether or not the reminders are on. Switching them on later asks
+    // this same record the same question, and a stretch must not be lost
+    // because the shell happened to restart while they were off -- off, then
+    // restart, then on would otherwise be a two-step way to a fresh three
+    // hours, which is the hole again with an extra step in it.
+    root.activitySaved = Model.parseActivityState(root.activityRaw)
 
-    if (!back.kept) {
-      // Either nothing was saved, or they were away long enough that being
-      // away was the break. Only worth a line when there was something to
-      // lose; a first run is not an event.
-      if (saved.activeMs > 0 && root.activityConfig.enabled === true)
-        logEvent("activity: " + Math.round(back.gapMs / 60000)
-                 + " min away across the restart -- the stretch reset")
+    if (root.activityConfig.enabled !== true) {
+      root.activityRestored = true
       return
     }
-
-    root.activityState = ({ activeMs: back.activeMs, idleMs: back.idleMs })
-    // The count did not move; the record of it is still current. Restamping
-    // the minute here stops the next tick writing the same figure back out.
-    root.persistedActiveMinute = root.activeMinutes
-    logEvent("activity: resumed at " + root.activeMinutes + " min at the machine")
+    root.applySavedCount("restart")
   }
 
   // Blackwall's own, in the same 0700 directory as the deadline, under the

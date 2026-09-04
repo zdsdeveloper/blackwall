@@ -442,6 +442,12 @@ was left. A reboot needs no special case — the machine being off is the longes
 kind of away there is, and if it was off for two minutes then two minutes is
 all that is owed to it.
 
+The **Break Reminders** toggle is judged by that same rule, because off means
+nobody is counting and that is indistinguishable from the shell not being
+there. Flick it and the stretch is still there; leave it off long enough to
+have actually had a break, and a break is what you had. The one thing that
+genuinely pays a stretch off is a break that was taken.
+
 ### The resolver sweep
 
 Every five minutes the daemon asks the system resolver where each contained

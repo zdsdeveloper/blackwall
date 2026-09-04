@@ -752,6 +752,45 @@ const activityWrite = (() => {
 
 check("round trip: the activity writer was found in Service.qml", activityWrite !== null, true);
 
+// Switching the reminders off is judged by the same rule as a restart, and for
+// the same reason: off means nobody is counting, which is indistinguishable
+// from the shell not being there. The service routes both through
+// restoreActivity, so the rule below is the rule the toggle gets.
+//
+// The toggle used to zero the count on the way out and start from zero on the
+// way back, which made it a switch that bought a fresh three hours.
+const t0 = 10 * 3600000;
+check("toggle: a flick keeps the stretch",
+      Model.restoreActivity(RCFG, SAVED(147, t0), t0 + 90000).activeMs, 147 * MIN);
+check("toggle: off long enough to have had a break is a break",
+      Model.restoreActivity(RCFG, SAVED(147, t0), t0 + 16 * MIN).kept, false);
+check("toggle: off, restarted, on -- still the same stretch",
+      Model.restoreActivity(RCFG, SAVED(147, t0), t0 + 4 * MIN).activeMs, 147 * MIN);
+
+// And that the service actually routes it that way. A silent failure
+// otherwise: the toggle would look identical and quietly hand out three hours.
+const toggleBody = (() => {
+  const start = serviceSrc.indexOf("function setActivityEnabled(");
+  if (start < 0) return null;
+  const end = serviceSrc.indexOf("\n  }", start);
+  return end < 0 ? null : serviceSrc.slice(start, end);
+})();
+
+check("toggle: setActivityEnabled was found in Service.qml", toggleBody !== null, true);
+
+if (toggleBody) {
+  check("toggle: switching on picks the count back up rather than starting it",
+        toggleBody.includes("applySavedCount"), true);
+  check("toggle: and nothing on that path zeroes the count",
+        toggleBody.includes("resetActivityCount"), false);
+  // The stamp on the way out is what the gap on the way back is measured
+  // from. Without it the gap runs from the last tick, which understates how
+  // long the switch was off by up to the tick interval -- and, worse, keeps
+  // running from a stale mark if it is off for days.
+  check("toggle: switching off stamps the record",
+        toggleBody.includes("persistActivity"), true);
+}
+
 if (activityWrite) {
   const written = new Set(
     [...activityWrite.matchAll(/^\s{6}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map(m => m[1]));
