@@ -313,6 +313,88 @@ check("sound: a junk value leaves it on", Model.parseConfig('{"soundEnabled":"no
 check("sound: null leaves it on", Model.parseConfig('{"soundEnabled":null}').soundEnabled, true);
 check("sound: malformed config leaves it on", Model.parseConfig("{oh no").soundEnabled, true);
 
+// ------------------------------------------------------------- the schedule
+//
+// Windows the wall closes by itself. The awkward parts are all about time
+// rather than about locking: a window that crosses midnight, one that only
+// runs on some days, and one that started last week and is still open.
+
+const SCHED = (w) => Model.parseSchedule({ enabled: true, windows: w }).windows;
+// 2026-09-04 is a Friday.
+const at = (day, h, m) => new Date(2026, 8, day, h, m);
+// Null-safe on purpose. Reaching straight for `.label` throws on a null
+// return, which crashes the whole file instead of failing one check -- so a
+// regression reports as a stack trace with everything after it unrun, and the
+// grep you wrote to read the results hides it. Ask for the label, get the
+// label or null.
+const labelAt = (w, d) => { const a = Model.activeWindowAt(w, d); return a ? a.label : null; };
+
+check("time: a clock time becomes minutes", Model.minutesOfDay("23:30"), 1410);
+check("time: midnight is zero", Model.minutesOfDay("00:00"), 0);
+check("time: junk never matches", Model.minutesOfDay("nope"), -1);
+check("time: an impossible hour never matches", Model.minutesOfDay("25:00"), -1);
+check("time: an impossible minute never matches", Model.minutesOfDay("10:75"), -1);
+check("time: empty never matches", Model.minutesOfDay(""), -1);
+
+// --- shape ---
+check("window: a wrapping window is marked as one",
+      SCHED([{ start: "23:30", end: "06:00" }])[0].wraps, true);
+check("window: a same-day window is not",
+      SCHED([{ start: "09:00", end: "17:00" }])[0].wraps, false);
+check("window: no days named means every day",
+      SCHED([{ start: "09:00", end: "17:00" }])[0].days.length, 7);
+check("window: days are matched loosely",
+      SCHED([{ start: "09:00", end: "17:00", days: ["Monday", "WED"] }])[0].days, [1, 3]);
+// A window of zero length is not a window.
+check("window: start equal to end is dropped",
+      SCHED([{ start: "09:00", end: "09:00" }]).length, 0);
+check("window: an unparseable time is dropped",
+      SCHED([{ start: "banana", end: "17:00" }]).length, 0);
+check("window: a non-object is dropped", SCHED([null, 7, "x"]).length, 0);
+
+// --- when it is on ---
+const night = SCHED([{ label: "Bedtime", start: "23:30", end: "06:00" }]);
+check("active: inside, before midnight", labelAt(night, at(4, 23, 40)), "Bedtime");
+check("active: inside, after midnight", labelAt(night, at(5, 2, 0)), "Bedtime");
+check("active: just before it opens", labelAt(night, at(4, 23, 29)), null);
+check("active: exactly as it opens", labelAt(night, at(4, 23, 30)), "Bedtime");
+// The close is exclusive, so a window ending at 06:00 is over at 06:00.
+check("active: exactly as it closes", labelAt(night, at(5, 6, 0)), null);
+check("active: well outside", labelAt(night, at(5, 12, 0)), null);
+check("active: how long is left", Model.activeWindowAt(night, at(5, 5, 30)).endsInMinutes, 30);
+
+// --- the one that is easy to get wrong ---
+// `days` names the day a window STARTS. A Friday bedtime runs into Saturday
+// morning; it is not a Saturday window, and Saturday night is not one either.
+const friOnly = SCHED([{ label: "Fri", start: "23:30", end: "06:00", days: ["fri"] }]);
+check("days: Friday night is on", labelAt(friOnly, at(4, 23, 45)), "Fri");
+check("days: Saturday morning is still that window", labelAt(friOnly, at(5, 3, 0)), "Fri");
+check("days: Saturday night is not", labelAt(friOnly, at(5, 23, 45)), null);
+check("days: Thursday night is not", labelAt(friOnly, at(3, 23, 45)), null);
+
+// A Saturday window running into Sunday crosses the end of the week, which is
+// a different arithmetic path from every other day.
+const satOnly = SCHED([{ label: "Sat", start: "23:30", end: "06:00", days: ["sat"] }]);
+check("week: Saturday night is on", labelAt(satOnly, at(5, 23, 45)), "Sat");
+check("week: Sunday morning wraps the week end", labelAt(satOnly, at(6, 2, 0)), "Sat");
+check("week: Sunday night is not", labelAt(satOnly, at(6, 23, 45)), null);
+
+// --- what is next ---
+check("next: later today", Model.nextWindowAt(night, at(4, 22, 0)).inMinutes, 90);
+check("next: while one is open, the next is tomorrow's",
+      Model.nextWindowAt(night, at(5, 2, 0)).inMinutes, 1290);
+check("next: a weekly window wraps round to next week",
+      Model.nextWindowAt(friOnly, at(5, 12, 0)).inMinutes, 6 * 1440 + 690);
+check("next: nothing scheduled is nothing next", Model.nextWindowAt([], at(4, 12, 0)), null);
+
+// --- the settings around it ---
+check("schedule: off by default", Model.parseSchedule({}).enabled, false);
+check("schedule: junk is off", Model.parseSchedule(null).enabled, false);
+check("schedule: warning defaults to two minutes", Model.parseSchedule({}).warnSeconds, 120);
+// No warning is a lock out of nowhere; an hour of warning is not a warning.
+check("schedule: warning is clamped low", Model.parseSchedule({ warnSeconds: -50 }).warnSeconds, 0);
+check("schedule: warning is clamped high", Model.parseSchedule({ warnSeconds: 99999 }).warnSeconds, 900);
+
 // -----------------------------------------------------------------------------
 
 if (failures > 0) {

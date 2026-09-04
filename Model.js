@@ -453,3 +453,136 @@ function identifyAgent(pointers, agents) {
   }
   return ""
 }
+
+
+// ------------------------------------------------------------- the schedule
+//
+// Windows of time the wall closes by itself: a bedtime, a standing commitment,
+// anything recurring. Kept as pure functions over a Date so every awkward case
+// -- crossing midnight, a window that only runs on some days, the moment one
+// window ends and another begins -- is decided here and can be tested without
+// a clock.
+//
+// Windows can come from config or be handed in by another plugin. The
+// scheduler does not care which, which is what lets something else own a
+// domain it understands better -- prayer times, say, which are astronomical
+// and depend on where you are.
+
+var DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+
+// "23:30" -> 1410. Anything unparseable is -1, which never matches.
+function minutesOfDay(text) {
+  var m = /^\s*(\d{1,2})\s*:\s*(\d{2})\s*$/.exec(String(text || ""))
+  if (!m) return -1
+  var h = Number(m[1]), min = Number(m[2])
+  if (!isFinite(h) || !isFinite(min)) return -1
+  if (h < 0 || h > 23 || min < 0 || min > 59) return -1
+  return h * 60 + min
+}
+
+function normaliseWindow(raw) {
+  if (!raw || typeof raw !== "object") return null
+  var start = minutesOfDay(raw.start)
+  var end = minutesOfDay(raw.end)
+  if (start < 0 || end < 0 || start === end) return null
+
+  // `days` names the days a window STARTS on, not every day it touches. A
+  // bedtime from 23:30 Friday to 06:00 Saturday is a Friday window; saying
+  // otherwise would either miss Friday night or add an unwanted Saturday one.
+  var days = []
+  if (Array.isArray(raw.days)) {
+    for (var i = 0; i < raw.days.length; i++) {
+      var k = String(raw.days[i] || "").slice(0, 3).toLowerCase()
+      var at = DAY_KEYS.indexOf(k)
+      if (at >= 0 && days.indexOf(at) < 0) days.push(at)
+    }
+  }
+  // No days named means every day, which is the useful default for a bedtime.
+  if (days.length === 0) days = [0, 1, 2, 3, 4, 5, 6]
+
+  return {
+    label: String(raw.label || "Scheduled"),
+    start: start,
+    end: end,
+    days: days.sort(function (a, b) { return a - b }),
+    // 23:30 -> 06:00 wraps; 09:00 -> 17:00 does not.
+    wraps: end < start
+  }
+}
+
+function parseSchedule(raw) {
+  var off = { enabled: false, warnSeconds: 120, windows: [] }
+  if (!raw || typeof raw !== "object") return off
+  var windows = []
+  if (Array.isArray(raw.windows)) {
+    for (var i = 0; i < raw.windows.length; i++) {
+      var w = normaliseWindow(raw.windows[i])
+      if (w) windows.push(w)
+    }
+  }
+  var warn = Number(raw.warnSeconds)
+  return {
+    enabled: raw.enabled === true,
+    // Clamped: no warning at all is a lock that arrives out of nowhere, and an
+    // hour of warning is not a warning.
+    warnSeconds: isFinite(warn) ? clamp(Math.round(warn), 0, 900) : 120,
+    windows: windows
+  }
+}
+
+// How many minutes into the week a moment is, 0 = Sunday 00:00.
+function weekMinutes(date) {
+  return date.getDay() * 1440 + date.getHours() * 60 + date.getMinutes()
+}
+
+// Every occurrence of a window in the week, as [openMinute, closeMinute) pairs
+// on the same 0..10080 line. A wrapping window can run past the end of the
+// week, which is why the close is allowed to exceed 10080.
+function windowSpans(w) {
+  var out = []
+  for (var i = 0; i < w.days.length; i++) {
+    var open = w.days[i] * 1440 + w.start
+    var length = w.wraps ? (1440 - w.start) + w.end : (w.end - w.start)
+    out.push({ open: open, close: open + length, label: w.label })
+  }
+  return out
+}
+
+// The window covering this moment, or null.
+function activeWindowAt(windows, date) {
+  if (!windows || !windows.length) return null
+  var now = weekMinutes(date)
+  for (var i = 0; i < windows.length; i++) {
+    var spans = windowSpans(windows[i])
+    for (var j = 0; j < spans.length; j++) {
+      var s = spans[j]
+      // Checked at +10080 as well, so a window that started late last week
+      // and runs into this one is still found.
+      if ((now >= s.open && now < s.close) ||
+          (now + 10080 >= s.open && now + 10080 < s.close)) {
+        return { label: s.label, endsInMinutes: Math.ceil(
+          (now >= s.open ? s.close - now : s.close - (now + 10080))) }
+      }
+    }
+  }
+  return null
+}
+
+// The next window due to open, and how long until it does.
+function nextWindowAt(windows, date) {
+  if (!windows || !windows.length) return null
+  var now = weekMinutes(date)
+  var best = null
+  for (var i = 0; i < windows.length; i++) {
+    var spans = windowSpans(windows[i])
+    for (var j = 0; j < spans.length; j++) {
+      var s = spans[j]
+      // This week's occurrence if it is still ahead, otherwise next week's.
+      var until = s.open - now
+      if (until < 0) until += 10080
+      if (best === null || until < best.inMinutes)
+        best = { label: s.label, inMinutes: until }
+    }
+  }
+  return best
+}
