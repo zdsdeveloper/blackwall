@@ -571,6 +571,11 @@ function scheduledStretch(minutesLeft, maxLockMinutes) {
 }
 
 // How many minutes into the week a moment is, 0 = Sunday 00:00.
+//
+// Minute resolution: seconds are dropped. Everything downstream inherits it,
+// so a window can be entered up to a minute late and a lock can outlive its
+// window by under a minute. Both are inside engage's own 30s floor and neither
+// is worth carrying seconds through the whole file to avoid.
 function weekMinutes(date) {
   return date.getDay() * 1440 + date.getHours() * 60 + date.getMinutes()
 }
@@ -625,4 +630,70 @@ function nextWindowAt(windows, date) {
     }
   }
   return best
+}
+
+
+// What the scheduler should do at this instant.
+//
+// Pulled out of the QML deliberately. The decision to take someone's screen
+// away is the most consequential thing this plugin does automatically, and
+// while it lived inside a Timer handler it could not be tested at all -- which
+// is how a window entered wrong came to engage for 226 minutes in a single
+// tick. Here it is a pure function of its inputs and every branch is reachable
+// from a test.
+//
+// The caller supplies:
+//   schedule   what parseSchedule produced
+//   windows    every window in force, from config and from providers alike
+//   now        a Date
+//   holding    whether the wall is already up, for any reason
+//   gapUntilMs epoch ms before which no new stretch may be taken
+//
+// It returns one of:
+//   { action: "none" }
+//   { action: "warn", label, inMinutes }
+//   { action: "lock", label, minutes, gapUntilMs }
+//
+// It never returns "lock" while holding, never for longer than the cap, and
+// never inside the gap.
+function scheduleDecision(schedule, windows, now, holding, gapUntilMs) {
+  var none = { action: "none" }
+  if (!schedule || schedule.enabled !== true) return none
+  if (!windows || !windows.length) return none
+  // Duck-typed, not `instanceof Date`. A Date built in one JS realm is not an
+  // instance of another realm's Date, and this file is a QML JavaScript
+  // library evaluated in its own scope -- so the check can quietly answer
+  // false for a perfectly good Date and the scheduler simply declines to act,
+  // silently and for ever. Caught by a test harness that has the same split.
+  if (!now || typeof now.getTime !== "function") return none
+  var nowCheck = now.getTime()
+  if (typeof nowCheck !== "number" || !isFinite(nowCheck)) return none
+
+  var nowMs = now.getTime()
+  var active = activeWindowAt(windows, now)
+
+  if (active) {
+    // Already behind the wall: the window will still be there when it falls.
+    if (holding) return none
+    // Inside the daylight between stretches. This is the recovery path and it
+    // is deliberate.
+    if (isFinite(gapUntilMs) && nowMs < gapUntilMs) return none
+
+    var minutes = scheduledStretch(active.endsInMinutes, schedule.maxLockMinutes)
+    if (minutes < 1) return none
+    return {
+      action: "lock",
+      label: active.label,
+      minutes: minutes,
+      // The stretch, then the gap.
+      gapUntilMs: nowMs + minutes * 60000 + schedule.gapSeconds * 1000
+    }
+  }
+
+  // Nothing is open. Warn if something is about to be.
+  if (holding) return none
+  var next = nextWindowAt(windows, now)
+  if (!next) return none
+  if (next.inMinutes * 60 > schedule.warnSeconds) return none
+  return { action: "warn", label: next.label, inMinutes: next.inMinutes }
 }

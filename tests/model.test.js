@@ -431,6 +431,66 @@ check("stretch: junk is not a lock", Model.scheduledStretch("soon", 30), 0);
 check("stretch: the bedtime that caused this now costs 30, not 226",
       Model.scheduledStretch(226, Model.parseSchedule({}).maxLockMinutes), 30);
 
+// ------------------------------------------------- the scheduler's decision
+//
+// The most consequential thing this plugin does without being asked. While it
+// lived inside a Timer handler it could not be tested, which is how a window
+// entered wrong came to take the machine for 226 minutes in one tick.
+
+const SCH = (o) => Model.parseSchedule(Object.assign({ enabled: true }, o));
+const decide = (sch, now, holding, gap) =>
+  Model.scheduleDecision(sch, sch.windows, now, holding, gap === undefined ? 0 : gap);
+
+// Thursday 23:30 -> Friday 06:00. `at(4,...)` is Friday.
+const thu = SCH({ windows: [{ label: "Bedtime", start: "23:30", end: "06:00", days: ["thu"] }] });
+
+check("decide: the incident locks, but only for the cap",
+      decide(thu, at(4, 2, 0), false).minutes, 30);
+check("decide: and it is the right window", decide(thu, at(4, 2, 0), false).label, "Bedtime");
+// 240 minutes were left. The cap is what stands between a mistyped window and
+// an evening.
+check("decide: it does not take the whole remainder",
+      decide(thu, at(4, 2, 0), false).minutes < 240, true);
+check("decide: nothing while already behind the wall",
+      decide(thu, at(4, 2, 0), true).action, "none");
+check("decide: nothing inside the gap",
+      decide(thu, at(4, 2, 0), false, at(4, 2, 0).getTime() + 60000).action, "none");
+check("decide: the gap is the stretch plus the configured daylight",
+      decide(thu, at(4, 2, 0), false).gapUntilMs
+        - at(4, 2, 0).getTime(), 30 * 60000 + 45 * 1000);
+
+// --- refusing to act ---
+check("decide: a disabled schedule does nothing",
+      Model.scheduleDecision(Model.parseSchedule({ windows: [] }), thu.windows, at(4, 2, 0), false, 0).action, "none");
+check("decide: no windows, nothing to do", decide(SCH({ windows: [] }), at(4, 2, 0), false).action, "none");
+// Realm-safe: `instanceof Date` answers false for a Date from another JS
+// context, and this file is a QML library evaluated in its own scope. A guard
+// that got this wrong would decline to act for ever, silently.
+check("decide: junk instead of a date does nothing", decide(thu, "tuesday", false).action, "none");
+check("decide: an invalid date does nothing", decide(thu, new Date("nonsense"), false).action, "none");
+check("decide: null does nothing", decide(thu, null, false).action, "none");
+
+// --- short windows ---
+const brief = SCH({ windows: [{ label: "Brief", start: "10:00", end: "10:05" }] });
+check("decide: a short window is taken whole", decide(brief, at(4, 10, 1), false).minutes, 4);
+// The scheduler works to the minute -- weekMinutes drops seconds -- so the
+// last whole minute is still taken, and the lock can outlive its window by
+// under a minute. That is within engage's own 30s floor and not worth chasing;
+// what matters is that it stops at the boundary rather than running on.
+check("decide: the last whole minute is still taken",
+      decide(brief, at(4, 10, 4), false).minutes, 1);
+check("decide: nothing once the window has closed",
+      decide(brief, at(4, 10, 5), false).action, "none");
+
+// --- warning ---
+const soon = SCH({ windows: [{ label: "Soon", start: "10:00", end: "11:00" }], warnSeconds: 120 });
+check("decide: warns just before it opens", decide(soon, at(4, 9, 59), false).action, "warn");
+check("decide: the warning names the window", decide(soon, at(4, 9, 59), false).label, "Soon");
+check("decide: no warning when it is still far off", decide(soon, at(4, 9, 30), false).action, "none");
+check("decide: no warning while already locked", decide(soon, at(4, 9, 59), true).action, "none");
+// Once it is open, locking is the answer rather than warning about it.
+check("decide: an open window locks rather than warns", decide(soon, at(4, 10, 30), false).action, "lock");
+
 // -----------------------------------------------------------------------------
 
 if (failures > 0) {

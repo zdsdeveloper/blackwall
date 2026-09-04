@@ -187,54 +187,50 @@ Item {
     }
     var now = new Date()
     var windows = root.effectiveWindows
+    // Kept for the bar and the IPC readout; the decision below does not use
+    // them, so what is shown and what is done cannot drift apart.
     root.activeWindow = Model.activeWindowAt(windows, now)
     root.nextWindow = Model.nextWindowAt(windows, now)
 
-    // --- act ---------------------------------------------------------------
-    if (root.activeWindow) {
-      if (root.holding) {
-        // Already behind the wall. The window will still be here when it
-        // comes down.
-        return
-      }
-      if (Date.now() < root.scheduleGapUntil) {
-        // Inside the daylight between stretches. This is deliberate.
-        return
-      }
-      var stretch = Model.scheduledStretch(root.activeWindow.endsInMinutes,
-                                           root.scheduleConfig.maxLockMinutes)
-      // Under a minute is not worth a lock: engage has its own floor and
-      // would hold past the end of the window.
-      if (stretch < 1) return
-      root.scheduleGapUntil = Date.now() + stretch * 60000
-                            + root.scheduleConfig.gapSeconds * 1000
-      logEvent("schedule: " + root.activeWindow.label + " -- locking for "
-               + stretch + " min of "
-               + root.activeWindow.endsInMinutes + " remaining")
-      root.engage(stretch * 60)
+    // Every branch of this lives in Model.scheduleDecision, where it can be
+    // tested. This function's only job is to carry out what it says.
+    var call = Model.scheduleDecision(root.scheduleConfig, windows, now,
+                                      root.holding, root.scheduleGapUntil)
+
+    if (call.action === "lock") {
+      root.scheduleGapUntil = call.gapUntilMs
+      logEvent("schedule: " + call.label + " -- locking for " + call.minutes
+               + " min of "
+               + (root.activeWindow ? root.activeWindow.endsInMinutes : "?")
+               + " remaining")
+      root.engage(call.minutes * 60)
       return
     }
 
-    // Out of any window: the next one starts fresh.
-    root.scheduleGapUntil = 0
-
-    // --- warn --------------------------------------------------------------
-    if (!root.nextWindow || root.holding) return
-    var seconds = root.nextWindow.inMinutes * 60
-    if (seconds > root.scheduleConfig.warnSeconds) {
-      root.warnedFor = ""
+    if (call.action === "warn") {
+      // Once per approach rather than every fifteen seconds through the whole
+      // warning period.
+      if (root.warnedFor === call.label) return
+      root.warnedFor = call.label
+      var mins = Math.max(1, call.inMinutes)
+      logEvent("schedule: warning for " + call.label)
+      warnProc.command = ["notify-send", "-u", "critical", "-a", "Blackwall",
+                          "The Blackwall closes in " + mins
+                          + (mins === 1 ? " minute" : " minutes"),
+                          call.label + " -- save what you are doing."]
+      warnProc.running = true
       return
     }
-    var warnKey = root.nextWindow.label + "|" + root.nextWindow.inMinutes
-    if (root.warnedFor.indexOf(root.nextWindow.label + "|") === 0) return
-    root.warnedFor = warnKey
-    var mins = Math.max(1, root.nextWindow.inMinutes)
-    logEvent("schedule: warning for " + root.nextWindow.label)
-    warnProc.command = ["notify-send", "-u", "critical", "-a", "Blackwall",
-                        "The Blackwall closes in " + mins
-                        + (mins === 1 ? " minute" : " minutes"),
-                        root.nextWindow.label + " -- save what you are doing."]
-    warnProc.running = true
+
+    // Nothing to do. Forget the warning once no window is near, so the next
+    // approach warns again, and drop the gap once nothing is open so the next
+    // window starts fresh.
+    if (!root.activeWindow) {
+      root.scheduleGapUntil = 0
+      if (!root.nextWindow
+          || root.nextWindow.inMinutes * 60 > root.scheduleConfig.warnSeconds)
+        root.warnedFor = ""
+    }
   }
 
   Process { id: warnProc }
