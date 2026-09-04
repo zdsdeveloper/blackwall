@@ -442,6 +442,20 @@ was left. A reboot needs no special case — the machine being off is the longes
 kind of away there is, and if it was off for two minutes then two minutes is
 all that is owed to it.
 
+"Away" is not the compositor's answer on its own. The compositor is asked
+whether an input device has been touched, and a film answers that wrong: two
+hours in front of the screen with no keyboard and no mouse was two hours away,
+so the stretch never grew and the reset kept firing — the one case the feature
+exists for was the one case it could not see. Anything reporting itself as
+playing over MPRIS counts as somebody at the machine. Only *playing*: paused
+media with nothing touched for a quarter of an hour is somebody who left the
+room with the film up.
+
+The cost of that, and it is the right way round: music playing to an empty desk
+reads as somebody at it, so the break comes sooner than it strictly should. A
+break that arrives early is a nuisance; a three-hour film that counts as
+nothing is the feature not working.
+
 The **Break Reminders** toggle is judged by that same rule, because off means
 nobody is counting and that is indistinguishable from the shell not being
 there. Flick it and the stretch is still there; leave it off long enough to

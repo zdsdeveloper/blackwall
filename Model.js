@@ -961,3 +961,23 @@ function restoreActivity(cfg, saved, nowMs) {
   out.kept = true
   return out
 }
+
+// Whether nobody is at the machine.
+//
+// "Idle" from the compositor means no input device has been touched, and that
+// is the wrong question for a film. Two hours in front of the screen with no
+// keyboard and no mouse was counted as two hours away: the stretch never grew,
+// the reset kept firing, and the one case this whole feature exists for was
+// the one case it could not see.
+//
+// Something playing is somebody watching it. Only actually playing counts --
+// paused media with nothing touched for a quarter of an hour is somebody who
+// left the room with the film up.
+//
+// The known cost, and it is the right way round: music playing to an empty
+// desk reads as somebody at it, so the break comes sooner than it strictly
+// should. A break that arrives early is a nuisance; a three hour film that
+// counts as nothing is the feature not working.
+function awayNow(isIdle, mediaPlaying) {
+  return isIdle === true && mediaPlaying !== true
+}

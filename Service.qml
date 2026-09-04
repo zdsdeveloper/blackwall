@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import Quickshell.Services.Mpris
 import "Model.js" as Model
 
 // Blackwall: a timed session lock with no authentication path.
@@ -158,7 +159,27 @@ Item {
   readonly property int activeMinutes:
     Math.floor((Number(root.activityState.activeMs) || 0) / 60000)
 
-  // Whether the compositor says nobody is at the machine.
+  // Whether anything is playing.
+  //
+  // The compositor is asked whether an input device has been touched, which is
+  // a question a film answers wrong. This asks the other one, and MPRIS
+  // answers it directly: a player that says it is playing is a player being
+  // watched or listened to.
+  //
+  // A binding rather than a reading taken at tick time, so the station's
+  // "held" line is true the moment the film is paused rather than up to
+  // fifteen seconds later.
+  readonly property bool mediaPlaying: {
+    var model = Mpris.players
+    var list = model ? model.values : null
+    if (!list) return false
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].isPlaying === true) return true
+    }
+    return false
+  }
+
+  // Whether nobody is at the machine.
   //
   // Exposed because the station draws this clock, and "the count is held" is a
   // different thing to tell the operator than "the count is running" -- one of
@@ -166,7 +187,8 @@ Item {
   // false when nothing is counting, so an idle monitor that is switched off
   // cannot make the station say they walked away.
   readonly property bool awayFromPost:
-    root.activityConfig.enabled === true && idleWatch.isIdle === true
+    root.activityConfig.enabled === true
+    && Model.awayNow(idleWatch.isIdle, root.mediaPlaying)
 
   IdleMonitor {
     id: idleWatch
@@ -195,7 +217,7 @@ Item {
 
     root.activityState = Model.activityTick(root.activityConfig,
                                             root.activityState,
-                                            idleWatch.isIdle, delta)
+                                            root.awayFromPost, delta)
 
     // Written down whenever the minute on the count changes, which is once a
     // minute at the machine and not at all while they are away.
@@ -1364,7 +1386,9 @@ Item {
     function breaks(): string {
       if (root.activityConfig.enabled !== true) return "off"
       return "on  |  " + root.activeMinutes + " min at the machine"
-             + (idleWatch.isIdle ? "  |  away" : "")
+             + (root.awayFromPost
+                ? "  |  away"
+                : (idleWatch.isIdle ? "  |  counting (something is playing)" : ""))
     }
 
     function setBreaks(value: string): string {

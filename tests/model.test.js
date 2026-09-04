@@ -667,6 +667,56 @@ check("readout: due agrees with the decision that acts",
        Model.activityDecision(ACT({ enabled: true, breakAfterMinutes: 180 }), dueState, 0, 1000).action],
       [true, "demand"]);
 
+// ------------------------------------------------------- what counts as away
+//
+// The bug this closes: sitting still through a film. The compositor is asked
+// whether an input device has been touched, and for two hours the answer was
+// no -- so the stretch never grew and the fifteen minute reset kept firing.
+// The one case the whole feature exists for was the one case it could not see.
+
+check("away: idle with nothing playing is away", Model.awayNow(true, false), true);
+check("away: idle with something playing is not", Model.awayNow(true, true), false);
+check("away: touching things is never away", Model.awayNow(false, false), false);
+check("away: nor is touching things while it plays", Model.awayNow(false, true), false);
+check("away: an unknown answer is not treated as away",
+      [Model.awayNow(undefined, undefined), Model.awayNow(null, null)], [false, false]);
+
+// The load-bearing one, run through the clock rather than asserted on the
+// rule. Two hours of film: no keyboard, no mouse, something playing the whole
+// time. The stretch must be two hours, not zero.
+{
+  const film = ACT({ breakAfterMinutes: 180, idleResetMinutes: 15 });
+  let state = { activeMs: 0, idleMs: 0 };
+  for (let i = 0; i < 120; i++)
+    state = Model.activityTick(film, state, Model.awayNow(true, true), MIN);
+  check("away: two hours of film is two hours at the machine",
+        Math.floor(state.activeMs / 60000), 120);
+  check("away: and the reset never fired", state.idleMs, 0);
+
+  // The same two hours with nothing playing is somebody who left.
+  let gone = { activeMs: 0, idleMs: 0 };
+  for (let i = 0; i < 120; i++)
+    gone = Model.activityTick(film, gone, Model.awayNow(true, false), MIN);
+  check("away: two hours of nothing is two hours away", gone.activeMs, 0);
+}
+
+// And that the service feeds the clock this answer rather than the raw idle
+// flag. Silent otherwise: the count would simply be wrong, slowly.
+const tickBody = (() => {
+  const start = serviceSrc.indexOf("function activityTick(");
+  if (start < 0) return null;
+  const end = serviceSrc.indexOf("\n  }", start);
+  return end < 0 ? null : serviceSrc.slice(start, end);
+})();
+
+check("away: the service tick was found in Service.qml", tickBody !== null, true);
+if (tickBody) {
+  check("away: the clock is fed the media-aware answer",
+        tickBody.includes("root.awayFromPost"), true);
+  check("away: and not the raw idle flag",
+        tickBody.includes("idleWatch.isIdle"), false);
+}
+
 // ------------------------------------------- carrying the count across a restart
 //
 // The shell restarts on a theme change or any plugin edit. Until this existed,
