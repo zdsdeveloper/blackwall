@@ -44,8 +44,20 @@ Item {
   readonly property real charInterval: 0.006
   readonly property real greetHold: 1.15
 
-  readonly property real elapsed: root.running
-    ? Math.max(0, root.clock - root.startedAt) : 0
+  // Deliberately independent of `running`.
+  //
+  // Gating this on running made a binding loop: skip() clears running, which
+  // changes elapsed, which re-fires the handler below that called skip(). Qt
+  // spots the cycle and breaks the binding rather than spinning -- so elapsed
+  // froze, the sequence never reached its end, `finished` never fired, and
+  // powerUp() never ran. Every powerAt slot stays at zero until it does, so
+  // the whole station stayed invisible: an empty black window that never
+  // filled in, for the life of the session.
+  //
+  // Nothing needs the gate. `running` already governs what is drawn and
+  // whether the handler acts, and elapsed running on before begin() is
+  // harmless because nothing reads it until then.
+  readonly property real elapsed: Math.max(0, root.clock - root.startedAt)
 
   readonly property real linesDoneAt: root.lines.length * root.lineInterval
   readonly property bool greeting: root.elapsed >= root.linesDoneAt
