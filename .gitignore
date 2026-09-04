@@ -9,10 +9,11 @@
 # ignored by git and picked up automatically by the plugin.
 sounds/*
 !sounds/README.md
-# The takeover sting is the exception: it is not borrowed, it is synthesised
-# from oscillators by tools/make-takeover-sound.py, which is committed beside
-# it. Ours to ship, and re-makeable rather than an opaque binary.
-!sounds/takeover.mp3
+# Audio we made ourselves lives in audio/ and IS tracked. It is kept out of
+# sounds/ deliberately: that directory is where the operator drops their own
+# ambience, and the probe there takes the first file it finds -- so a shipped
+# one-shot sitting in it becomes the looping ambience the moment the operator's
+# own file is removed.
 
 # Byte-compiled guard, if anything ever imports it
 __pycache__/

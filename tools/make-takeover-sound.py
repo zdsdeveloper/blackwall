@@ -30,8 +30,8 @@ DUR = 2.45
 N = int(RATE * DUR)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_WAV = os.path.join(HERE, "..", "sounds", "takeover.wav")
-OUT_MP3 = os.path.join(HERE, "..", "sounds", "takeover.mp3")
+OUT_WAV = os.path.join(HERE, "..", "audio", "takeover.wav")
+OUT_MP3 = os.path.join(HERE, "..", "audio", "takeover.mp3")
 
 
 def env(t, attack, hold, release):

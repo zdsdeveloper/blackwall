@@ -117,7 +117,7 @@ Item {
   // under. Not looped -- it ends where the tear does.
   MediaPlayer {
     id: sting
-    source: Qt.resolvedUrl("sounds/takeover.mp3")
+    source: Qt.resolvedUrl("audio/takeover.mp3")
     audioOutput: AudioOutput { volume: root.audioVolume }
     onErrorOccurred: function (err, str) {
       // A missing or unplayable sting is not a reason for the wall to stall.

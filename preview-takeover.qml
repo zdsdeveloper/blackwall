@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import QtMultimedia
 
 // The lock's opening sequence, on a loop, in an ordinary window.
 //
@@ -21,6 +22,11 @@ ShellRoot {
     implicitHeight: 620
     color: "#050102"
     visible: true
+
+    // Closing the window has to end the process, not just hide the surface.
+    // Without this the preview kept running headless with the sting still
+    // looping, and the only way to stop it was to find the pid.
+    onVisibleChanged: if (!visible) Qt.quit()
 
     // Stands in for the lock surface underneath: the tear writes alpha zero
     // inside itself, so this is what shows through the hole.
@@ -45,6 +51,18 @@ ShellRoot {
       }
     }
 
+    // The ambience under it, as the lock plays it: started first and left
+    // running, so what you hear is the sting landing on top of it and the
+    // handoff between the two -- which is the part a preview of the tear alone
+    // could not show.
+    MediaPlayer {
+      id: ambience
+      source: Qt.resolvedUrl("audio/ambience.mp3")
+      loops: MediaPlayer.Infinite
+      audioOutput: AudioOutput { volume: 0.3 }
+      Component.onCompleted: play()
+    }
+
     TakeoverView {
       id: tk
       anchors.fill: parent
@@ -65,7 +83,7 @@ ShellRoot {
       anchors.bottom: parent.bottom
       anchors.horizontalCenter: parent.horizontalCenter
       anchors.bottomMargin: 10
-      text: "looping · close the window to stop"
+      text: "takeover looping over the ambience · close the window to stop"
       font.family: "monospace"
       font.pixelSize: 10
       color: Qt.rgba(1, 1, 1, 0.30)

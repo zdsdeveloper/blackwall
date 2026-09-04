@@ -510,8 +510,18 @@ Item {
     onExited: if (!root.bootIdLoaded) { root.bootIdLoaded = true; root.maybeResume() }
   }
 
+  // Three places, in order: what the operator configured, whatever they
+  // dropped in sounds/, and the ambience shipped with the plugin.
+  //
+  // The last of those is new. The lock used to come up silent unless you found
+  // your own audio, because the track it was built against was not ours to
+  // distribute. audio/ambience.mp3 is synthesised by tools/make-ambience.py
+  // and is, so there is now a voice out of the box -- still overridden by
+  // anything of your own, which is the order that matters.
+  readonly property string shippedAmbience: pluginDir + "/audio/ambience.mp3"
+
   readonly property string soundProbeScript:
-    'configured="$1"; dir="$2"; ' +
+    'configured="$1"; dir="$2"; shipped="$3"; ' +
     'if [[ -n $configured ]]; then ' +
       'case $configured in "~/"*) configured="$HOME/${configured:2}";; esac; ' +
       'if [[ -f $configured && -r $configured ]]; then printf %s "$configured"; exit 0; fi; ' +
@@ -519,12 +529,14 @@ Item {
     'shopt -s nullglob nocaseglob; ' +
     'for f in "$dir"/*.mp3 "$dir"/*.ogg "$dir"/*.opus "$dir"/*.flac "$dir"/*.wav "$dir"/*.m4a; do ' +
       'if [[ -f $f && -r $f ]]; then printf %s "$f"; exit 0; fi; ' +
-    'done'
+    'done; ' +
+    'if [[ -f $shipped && -r $shipped ]]; then printf %s "$shipped"; fi'
 
   function refreshSound() {
     if (soundProbe.running) return
     soundProbe.command = ["bash", "-c", root.soundProbeScript,
-                          "blackwall-sound-probe", root.configuredSoundPath, root.soundDir]
+                          "blackwall-sound-probe", root.configuredSoundPath,
+                          root.soundDir, root.shippedAmbience]
     soundProbe.running = true
   }
 
