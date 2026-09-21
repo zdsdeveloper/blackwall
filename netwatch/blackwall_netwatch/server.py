@@ -15,7 +15,7 @@ import struct
 import time
 
 from . import ladder, ledger
-from .blocklist import InvalidDomain
+from .blocklist import InvalidDomain, Released
 from .daemon import DEFAULT_INTERVAL_SECONDS, BlocklistFull
 
 
@@ -27,6 +27,11 @@ def handle(nw, request, peer_is_root=False):
             return {"ok": False, "error": "add requires a domain"}
         try:
             return {"ok": True, "domain": nw.add(raw)}
+        except Released as exc:
+            # Ahead of InvalidDomain, which it is: "not a domain" would be a
+            # lie about a perfectly good name.
+            return {"ok": False,
+                    "error": "%s is the one exception, and stays released" % exc}
         except InvalidDomain as exc:
             return {"ok": False, "error": "not a domain: %s" % exc}
         except BlocklistFull:

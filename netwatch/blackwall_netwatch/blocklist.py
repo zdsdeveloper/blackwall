@@ -6,6 +6,7 @@ string every time is a hole in the wall. This is the only place in NetWatch that
 is allowed to transform a domain.
 """
 
+import hashlib
 import re
 
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -13,6 +14,34 @@ _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 class InvalidDomain(ValueError):
     pass
+
+
+# The one exception.
+#
+# There is no removal. Nothing in NetWatch takes a domain off the wall, and
+# there is no command, flag or file that could be made to. This is not that: it
+# is a single decision, made deliberately by the operator on 2026-09-21 about a
+# single domain that turned out to be a storefront for ordinary games as well
+# as the thing it was listed for, and fixed here in the program rather than
+# offered as a way of making more.
+#
+# It is the only one there will ever be. The test suite holds this set to at
+# most one entry: it may go back to empty, and it may never grow.
+#
+# Held as a digest rather than a name because this repository is public and the
+# list is not. It matches the apex exactly and nothing beneath it -- every
+# subdomain on the list stays exactly where it is.
+RELEASED = frozenset({
+    "f21ea0f474a85c35c4911149e2dc1687728d745a924596fafe02467ac9563471",
+})
+
+
+class Released(InvalidDomain):
+    """Refused by add(): the one domain the wall has let go."""
+
+
+def is_released(domain):
+    return hashlib.sha256(domain.encode("utf-8")).hexdigest() in RELEASED
 
 
 def normalize(raw):
@@ -50,9 +79,14 @@ def parse_lines(text):
         if not stripped:
             continue
         try:
-            domains.add(normalize(stripped))
+            domain = normalize(stripped)
         except InvalidDomain:
             rejected.append(stripped)
+            continue
+        # Still in the file -- it is append-only, and its history is not ours
+        # to rewrite -- but no longer on the wall.
+        if not is_released(domain):
+            domains.add(domain)
     return sorted(domains), rejected
 
 

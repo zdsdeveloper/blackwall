@@ -196,6 +196,11 @@ class NetWatch:
 
     def add(self, raw):
         domain = blocklist.normalize(raw)
+        if blocklist.is_released(domain):
+            # Not silently accepted. It would be appended, recorded as added,
+            # and then filtered straight back out again -- an add that reports
+            # success and contains nothing.
+            raise blocklist.Released(domain)
         current = self.domains()
         if domain not in current:
             if len(current) >= MAX_DOMAINS:
@@ -306,6 +311,7 @@ class NetWatch:
             # yet must not be accused of anything.
             ledger.record(self.paths.ledger, "armed")
             entries = ledger.read(self.paths.ledger)
+        self._record_release(entries)
         # Asked before the repair, because the repair is what destroys the
         # evidence: once hosts.apply has put the sink lines back, nothing on
         # disk still says they were missing a moment ago. This is the whole
@@ -446,6 +452,34 @@ class NetWatch:
         self._deliver_pending()
         return {"changed": bool(targets), "verdict": verdict,
                 "targets": targets, "reasons": reasons}
+
+    def _record_release(self, entries):
+        """Put the one exception in the ledger, once.
+
+        Only on a machine where it was actually contained -- a ledger that
+        never added the domain has nothing to release -- and only the first
+        time, so the record says when the wall let go of it rather than
+        repeating that it had.
+        """
+        added, released = set(), set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            domain = entry.get("domain")
+            if not isinstance(domain, str):
+                continue
+            if entry.get("kind") == "added":
+                added.add(domain)
+            elif entry.get("kind") == "released":
+                released.add(domain)
+        for domain in sorted(added - released):
+            try:
+                normal = blocklist.normalize(domain)
+            except blocklist.InvalidDomain:
+                continue
+            if blocklist.is_released(normal) and normal not in released:
+                ledger.record(self.paths.ledger, "released", domain=normal)
+                released.add(normal)
 
     def _deliver_pending(self):
         """Hand an undelivered breach to the session, if there is one now.

@@ -139,9 +139,15 @@ def promised_domains(entries):
         # never produce, and a promise that cannot be satisfied is a breach
         # filed every cycle for ever -- a lock inside the first minute.
         try:
-            promised.add(blocklist.normalize(domain))
+            normal = blocklist.normalize(domain)
         except blocklist.InvalidDomain:
             continue
+        # The ledger still says it was added, and always will. Without this
+        # the restore below would read the released domain as one that left
+        # the list by a route the daemon does not offer, append it back, and
+        # do it again every cycle for ever.
+        if not blocklist.is_released(normal):
+            promised.add(normal)
     return promised
 
 

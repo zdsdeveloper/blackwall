@@ -404,6 +404,12 @@ Adding is deliberately unprivileged — the control socket is world-writable,
 because making it hard to *add* would be protecting the wrong direction. The
 list only grows.
 
+Once, and only once, a domain was let go: a deliberate decision on 2026-09-21
+about a storefront that turned out to carry ordinary games as well as what it
+was listed for. It is recorded in the ledger as `released`, everything beneath
+it stayed contained, and it is the only exception there will ever be. It does
+not make removal a thing NetWatch does; there is still no way to ask for one.
+
 Each domain becomes four lines in `/etc/hosts`: an IPv4 sink and an IPv6 sink,
 for the bare name and for `www.`. Both families matter, because the resolver
 consults them independently and a v4-only entry leaves a v6 route open.
